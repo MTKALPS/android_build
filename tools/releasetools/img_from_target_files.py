@@ -120,6 +120,12 @@ def main(argv):
           add_img_to_target_files.AddVendor(output_zip, prefix="")
         except KeyError:
           pass   # no vendor partition for this device
+        try:
+          input_zip.getinfo("CUSTOM/")
+          banner("AddCustom")
+          add_img_to_target_files.AddCustom(output_zip, prefix="")
+        except KeyError:
+          pass   # no custom partition for this device
         banner("AddUserdata")
         add_img_to_target_files.AddUserdata(output_zip, prefix="")
         banner("AddCache")

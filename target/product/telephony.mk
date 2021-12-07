@@ -1,4 +1,9 @@
 #
+# Copyright (C) 2014 MediaTek Inc.
+# Modification based on code covered by the mentioned copyright
+# and/or permission notice(s).
+#
+#
 # Copyright (C) 2007 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +22,18 @@
 # This is the list of product-level settings that are specific
 # to products that have telephony hardware.
 
-PRODUCT_PACKAGES := \
+
+ifndef MTK_TB_WIFI_3G_MODE
+    PRODUCT_PACKAGES := \
+        Mms
+else
+    ifeq ($(strip $(MTK_TB_WIFI_3G_MODE)), 3GDATA_SMS)
+        PRODUCT_PACKAGES := \
+            Mms
+    endif
+endif
+
+PRODUCT_PACKAGES += \
     CarrierConfig \
     Dialer \
     CallLogBackup \

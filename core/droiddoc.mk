@@ -1,4 +1,9 @@
 #
+# Copyright (C) 2014 MediaTek Inc.
+# Modification based on code covered by the mentioned copyright
+# and/or permission notice(s).
+#
+#
 # Copyright (C) 2008 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -77,6 +82,9 @@ ifneq ($(LOCAL_SDK_VERSION),)
   endif
 else
   LOCAL_JAVA_LIBRARIES := core-oj core-libart ext framework $(LOCAL_JAVA_LIBRARIES)
+ifneq ($(TARGET_BUILD_PDK),true)
+  LOCAL_JAVA_LIBRARIES := mediatek-common $(LOCAL_JAVA_LIBRARIES)
+endif #PDK
   $(full_target): PRIVATE_BOOTCLASSPATH := $(call java-lib-files, core-oj):$(call java-lib-files, core-libart)
 endif  # LOCAL_SDK_VERSION
 LOCAL_JAVA_LIBRARIES := $(sort $(LOCAL_JAVA_LIBRARIES))

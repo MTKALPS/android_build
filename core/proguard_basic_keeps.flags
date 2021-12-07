@@ -68,7 +68,16 @@
 # ProGuard may strip members of subclass of unknown super classes, in case an app is linking against
 # LOCAL_SDK_VERSION lower than the support library's LOCAL_SDK_VERSION.
 # See bug/20658265.
-# -dontwarn android.support.**
+-dontwarn android.support.**
 
 # Less spammy.
 -dontnote
+# MTK add
+-keep class com.mediatek.**.ext.** {
+  *;
+}
+
+-keepclassmembers class * {
+    native <methods>;
+}
+# MTK end

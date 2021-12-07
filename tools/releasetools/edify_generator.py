@@ -201,7 +201,12 @@ class EdifyGenerator(object):
       E.g. ext4=barrier=1,nodelalloc,errors=panic|f2fs=errors=recover
     """
     fstab = self.fstab
-    if fstab:
+    #wschen 2012-11-12
+    if mount_point == "/custom":
+      self.script.append('mount("ext4", "EMMC", "/dev/block/mmcblk", "/custom");')
+      self.mounts.add(mount_point)
+
+    elif fstab:
       p = fstab[mount_point]
       mount_dict = {}
       if mount_options_by_format is not None:
@@ -249,14 +254,18 @@ class EdifyGenerator(object):
     "/system")."""
 
     fstab = self.fstab
-    if fstab:
+#wschen 2012-11-12
+    if partition == "/custom":
+      self.script.append('format("ext4", "EMMC", "/dev/block/mmcblk", "0", "/custom");')
+
+    elif fstab:
       p = fstab[partition]
       self.script.append('format("%s", "%s", "%s", "%s", "%s");' %
                          (p.fs_type, common.PARTITION_TYPES[p.fs_type],
                           p.device, p.length, p.mount_point))
 
   def WipeBlockDevice(self, partition):
-    if partition not in ("/system", "/vendor"):
+    if partition not in ("/system", "/vendor", "custom"):
       raise ValueError(("WipeBlockDevice doesn't work on %s\n") % (partition,))
     fstab = self.fstab
     size = self.info.get(partition.lstrip("/") + "_size", None)
@@ -308,6 +317,18 @@ class EdifyGenerator(object):
         common.ErrorCode.APPLY_PATCH_FAILURE, srcfile))
     cmd = "".join(cmd)
     self.script.append(self.WordWrap(cmd))
+
+  def WriteRawImageUbifs(self, partition, fn):
+    """Write the given package file into the given MTD partition."""
+    self.script.append(
+        ('assert(package_extract_file("%(fn)s", "%(partition)s.img"));')
+        % {'partition': partition, 'fn': fn})
+
+  def WriteSparseImageUbifs(self, partition, fn):
+    """Write the given package file into the given MTD partition."""
+    self.script.append(
+        ('assert(write_sparse_image_mtd("%(fn)s", "%(partition)s"));')
+        % {'partition': partition,'fn': fn})
 
   def WriteRawImage(self, mount_point, fn, mapfn=None):
     """Write the given package file into the partition for the given

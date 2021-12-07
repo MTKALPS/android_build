@@ -364,7 +364,7 @@ endif
 
 is_sdk_build :=
 
-ifneq ($(filter sdk win_sdk sdk_addon,$(MAKECMDGOALS)),)
+ifneq ($(filter sdk win_sdk banyan_sdk_addon sdk_addon,$(MAKECMDGOALS)),)
 is_sdk_build := true
 endif
 

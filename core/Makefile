@@ -13,6 +13,12 @@ else
   FILE_NAME_TAG := $(BUILD_NUMBER)
 endif
 
+ifeq "" "$(CUSTOM_BUILD_VERNO)"
+  CUSTOM_BUILD_VERNO := $(BUILD_NUMBER)
+  CUSTOM_BUILD_VERNO := $(subst eng.$(USER).,,$(CUSTOM_BUILD_VERNO))
+endif
+CUSTOM_BUILD_VERNO_HDR := $(shell echo $(firstword $(CUSTOM_BUILD_VERNO)) | cut -b 1-15)
+
 # -----------------------------------------------------------------
 # Define rules to copy PRODUCT_COPY_FILES defined by the product.
 # PRODUCT_COPY_FILES contains words like <source file>:<dest file>[:<owner>].
@@ -213,6 +219,9 @@ ifneq ($(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_OEM_PROPERTIES),)
 	$(hide) $(foreach prop,$(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_OEM_PROPERTIES), \
 		echo "import /oem/oem.prop $(prop)" >> $@;)
 endif
+ifeq ($(strip $(MTK_CIP_SUPPORT)),yes)
+	$(hide) echo "import /custom/cip-build.prop" >> $@;
+endif
 	$(hide) TARGET_BUILD_TYPE="$(TARGET_BUILD_VARIANT)" \
 			TARGET_BUILD_FLAVOR="$(TARGET_BUILD_FLAVOR)" \
 			TARGET_DEVICE="$(TARGET_DEVICE)" \
@@ -265,6 +274,9 @@ endif
 		echo "$(line)" >> $@;)
 	$(hide) cat $(INSTALLED_ANDROID_INFO_TXT_TARGET) | grep 'require version-' | sed -e 's/require version-/ro.build.expect./g' >> $@
 	$(hide) build/tools/post_process_props.py $@ $(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_SYSTEM_PROPERTY_BLACKLIST)
+ifeq ($(strip $(MTK_CIP_SUPPORT)),yes)
+	$(hide) echo "import /custom/cip-build.prop" >> $@;
+endif
 
 build_desc :=
 
@@ -367,7 +379,19 @@ $(APKCERTS_FILE):
 	@echo APK certs list: $@
 	@mkdir -p $(dir $@)
 	@rm -f $@
-	$(foreach p,$(PACKAGES),\
+	$(hide) $(foreach p,$(wordlist 1,400,$(PACKAGES)),\
+          $(if $(PACKAGES.$(p).EXTERNAL_KEY),\
+	    echo 'name="$(p).apk" certificate="EXTERNAL" \
+	         private_key=""' >> $@;,\
+	    echo 'name="$(p).apk" certificate="$(PACKAGES.$(p).CERTIFICATE)" \
+	         private_key="$(PACKAGES.$(p).PRIVATE_KEY)"' >> $@;))
+	$(hide) $(foreach p,$(wordlist 401,800,$(PACKAGES)),\
+          $(if $(PACKAGES.$(p).EXTERNAL_KEY),\
+	    echo 'name="$(p).apk" certificate="EXTERNAL" \
+	         private_key=""' >> $@;,\
+	    echo 'name="$(p).apk" certificate="$(PACKAGES.$(p).CERTIFICATE)" \
+	         private_key="$(PACKAGES.$(p).PRIVATE_KEY)"' >> $@;))
+	$(hide) $(foreach p,$(wordlist 801,99999,$(PACKAGES)),\
 	  $(if $(PACKAGES.$(p).EXTERNAL_KEY),\
 	    $(call _apkcerts_echo_with_newline,\
 	      'name="$(p).apk" certificate="EXTERNAL" \
@@ -477,13 +501,29 @@ BUILT_RAMDISK_TARGET := $(PRODUCT_OUT)/ramdisk.img
 # We just build this directly to the install location.
 INSTALLED_RAMDISK_TARGET := $(BUILT_RAMDISK_TARGET)
 $(INSTALLED_RAMDISK_TARGET): $(MKBOOTFS) $(INTERNAL_RAMDISK_FILES) | $(MINIGZIP)
+ifeq ($(MTK_HEADER_SUPPORT),yes)
+$(INSTALLED_RAMDISK_TARGET): $(HOST_OUT_EXECUTABLES)/mkimage
+endif
 	$(call pretty,"Target ram disk: $@")
+ifeq ($(MTK_HEADER_SUPPORT),yes)
+	$(hide) $(MKBOOTFS) -d $(TARGET_OUT) $(TARGET_ROOT_OUT) | $(MINIGZIP) > $@_raw
+	$(hide) $(HOST_OUT_EXECUTABLES)/mkimage $@_raw ROOTFS 0xffffffff > $@
+else
 	$(hide) $(MKBOOTFS) -d $(TARGET_OUT) $(TARGET_ROOT_OUT) | $(MINIGZIP) > $@
+endif
 
 .PHONY: ramdisk-nodeps
 ramdisk-nodeps: $(MKBOOTFS) | $(MINIGZIP)
+ifeq ($(MTK_HEADER_SUPPORT),yes)
+ramdisk-nodeps: $(HOST_OUT_EXECUTABLES)/mkimage
+endif
 	@echo "make $@: ignoring dependencies"
+ifeq ($(MTK_HEADER_SUPPORT),yes)
+	$(hide) $(MKBOOTFS) -d $(TARGET_OUT) $(TARGET_ROOT_OUT) | $(MINIGZIP) > $(INSTALLED_RAMDISK_TARGET)_raw
+	$(hide) $(HOST_OUT_EXECUTABLES)/mkimage $(INSTALLED_RAMDISK_TARGET)_raw ROOTFS 0xffffffff > $(INSTALLED_RAMDISK_TARGET)
+else
 	$(hide) $(MKBOOTFS) -d $(TARGET_OUT) $(TARGET_ROOT_OUT) | $(MINIGZIP) > $(INSTALLED_RAMDISK_TARGET)
+endif
 
 ifneq ($(strip $(TARGET_NO_KERNEL)),true)
 
@@ -502,6 +542,21 @@ INTERNAL_BOOTIMAGE_FILES := $(filter-out --%,$(INTERNAL_BOOTIMAGE_ARGS))
 BOARD_KERNEL_BASE := $(strip $(BOARD_KERNEL_BASE))
 ifdef BOARD_KERNEL_BASE
   INTERNAL_BOOTIMAGE_ARGS += --base $(BOARD_KERNEL_BASE)
+endif
+
+BOARD_RAMDISK_OFFSET := $(strip $(BOARD_RAMDISK_OFFSET))
+ifdef BOARD_RAMDISK_OFFSET
+  INTERNAL_BOOTIMAGE_ARGS += --ramdisk_offset $(BOARD_RAMDISK_OFFSET)
+endif
+
+BOARD_KERNEL_OFFSET := $(strip $(BOARD_KERNEL_OFFSET))
+ifdef BOARD_KERNEL_OFFSET
+  INTERNAL_BOOTIMAGE_ARGS += --kernel_offset $(BOARD_KERNEL_OFFSET)
+endif
+
+BOARD_TAGS_OFFSET := $(strip $(BOARD_TAGS_OFFSET))
+ifdef BOARD_TAGS_OFFSET
+  INTERNAL_BOOTIMAGE_ARGS += --tags_offset $(BOARD_TAGS_OFFSET)
 endif
 
 BOARD_KERNEL_PAGESIZE := $(strip $(BOARD_KERNEL_PAGESIZE))
@@ -524,6 +579,10 @@ endif
 INTERNAL_MKBOOTIMG_VERSION_ARGS := \
     --os_version $(PLATFORM_VERSION) \
     --os_patch_level $(PLATFORM_SECURITY_PATCH)
+
+ifdef CUSTOM_BUILD_VERNO
+  INTERNAL_BOOTIMAGE_ARGS += --board $(CUSTOM_BUILD_VERNO_HDR)
+endif
 
 INSTALLED_BOOTIMAGE_TARGET := $(PRODUCT_OUT)/boot.img
 
@@ -742,8 +801,37 @@ else
 ifeq ($(TARGET_USERIMAGES_USE_EXT4),true)
 INTERNAL_USERIMAGES_USE_EXT := true
 INTERNAL_USERIMAGES_EXT_VARIANT := ext4
+ifeq ($(TARGET_USERIMAGES_USE_MTFTL),true)
+define generate-mtftl-prop-dictionary
+$(hide) echo "mtftl_support=yes"                                                >> $(1)
+$(hide) echo "pagesize=$(BOARD_MTFTL_MIN_IO_SIZE)"                              >> $(1)
+$(hide) echo "vid_offset=$(BOARD_MTFTL_VID_HDR_OFFSET)"                         >> $(1)
+$(hide) echo "lebsize=$(BOARD_MTFTL_LOGICAL_ERASEBLOCK_SIZE)"                   >> $(1)
+$(hide) echo "system_cnt=$(BOARD_MTFTL_ANDROID_MAX_LOGICAL_ERASEBLOCK_COUNT)"   >> $(1)
+$(hide) echo "userdata_cnt=$(BOARD_MTFTL_USRDATA_MAX_LOGICAL_ERASEBLOCK_COUNT)" >> $(1)
+$(hide) echo "blocksize=$(BOARD_FLASH_BLOCK_SIZE)"                              >> $(1)
+$(hide) echo "userdata_ini=$(PRODUCT_OUT)/ubi_usrdata.ini"                      >> $(1)
+$(hide) echo "system_ini=$(PRODUCT_OUT)/ubi_android.ini"                        >> $(1)
+endef
+else
+define generate-mtftl-prop-dictionary
+endef
 endif
 endif
+endif
+endif
+ifeq ($(TARGET_USERIMAGES_USE_UBIFS),true)
+INTERNAL_USERIMAGES_EXT_VARIANT := ubifs
+define generate-ubifs-prop-dictionary
+$(hide) echo "pagesize=$(BOARD_UBIFS_MIN_IO_SIZE)"                              >> $(1)
+$(hide) echo "vid_offset=$(BOARD_UBIFS_VID_HDR_OFFSET)"                         >> $(1)
+$(hide) echo "lebsize=$(BOARD_UBIFS_LOGICAL_ERASEBLOCK_SIZE)"                   >> $(1)
+$(hide) echo "system_cnt=$(BOARD_UBIFS_ANDROID_MAX_LOGICAL_ERASEBLOCK_COUNT)"   >> $(1)
+$(hide) echo "userdata_cnt=$(BOARD_UBIFS_USRDATA_MAX_LOGICAL_ERASEBLOCK_COUNT)" >> $(1)
+$(hide) echo "blocksize=$(BOARD_FLASH_BLOCK_SIZE)"                              >> $(1)
+$(hide) echo "userdata_ini=$(PRODUCT_OUT)/ubi_usrdata.ini"                      >> $(1)
+$(hide) echo "system_ini=$(PRODUCT_OUT)/ubi_android.ini"                        >> $(1)
+endef
 endif
 
 # These options tell the recovery updater/installer how to mount the partitions writebale.
@@ -757,9 +845,13 @@ ifneq (true,$(TARGET_USERIMAGES_SPARSE_EXT_DISABLED))
   INTERNAL_USERIMAGES_SPARSE_EXT_FLAG := -s
 endif
 
+ifneq ($(TARGET_USERIMAGES_USE_UBIFS),true)
 ifeq ($(INTERNAL_USERIMAGES_USE_EXT),true)
 INTERNAL_USERIMAGES_DEPS := $(SIMG2IMG)
 INTERNAL_USERIMAGES_DEPS += $(MKEXTUSERIMG) $(MAKE_EXT4FS) $(E2FSCK)
+ifeq ($(TARGET_USERIMAGES_USE_MTFTL),true)
+INTERNAL_USERIMAGES_DEPS += $(MKFTL) $(UBINIZE)
+endif
 ifeq ($(TARGET_USERIMAGES_USE_F2FS),true)
 INTERNAL_USERIMAGES_DEPS += $(MKF2FSUSERIMG) $(MAKE_F2FS)
 endif
@@ -771,6 +863,9 @@ endif
 ifneq ($(filter $(BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE) $(BOARD_SYSTEMIMAGE_FILE_SYSTEM_TYPE),squashfs),)
 INTERNAL_USERIMAGES_DEPS += $(MAKE_SQUASHFS) $(MKSQUASHFSUSERIMG) $(IMG2SIMG)
 endif
+else # TARGET_USERIMAGES_USE_UBIFS == true , default ext or yaffs
+INTERNAL_USERIMAGES_DEPS := $(MKUBIFS) $(UBINIZE)
+endif # TARGET_USERIMAGES_USE_UBIFS
 
 INTERNAL_USERIMAGES_BINARY_PATHS := $(sort $(dir $(INTERNAL_USERIMAGES_DEPS)))
 
@@ -801,6 +896,7 @@ $(if $(BOARD_SYSTEMIMAGE_SQUASHFS_DISABLE_4K_ALIGN),$(hide) echo "system_squashf
 $(if $(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_SYSTEM_BASE_FS_PATH),$(hide) echo "system_base_fs_file=$(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_SYSTEM_BASE_FS_PATH)" >> $(1))
 $(if $(BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE),$(hide) echo "userdata_fs_type=$(BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE)" >> $(1))
 $(if $(BOARD_USERDATAIMAGE_PARTITION_SIZE),$(hide) echo "userdata_size=$(BOARD_USERDATAIMAGE_PARTITION_SIZE)" >> $(1))
+$(if $(BOARD_CUSTOMIMAGE_PARTITION_SIZE),$(hide) echo "custom_size=$(BOARD_CUSTOMIMAGE_PARTITION_SIZE)" >> $(1))
 $(if $(BOARD_CACHEIMAGE_FILE_SYSTEM_TYPE),$(hide) echo "cache_fs_type=$(BOARD_CACHEIMAGE_FILE_SYSTEM_TYPE)" >> $(1))
 $(if $(BOARD_CACHEIMAGE_PARTITION_SIZE),$(hide) echo "cache_size=$(BOARD_CACHEIMAGE_PARTITION_SIZE)" >> $(1))
 $(if $(BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE),$(hide) echo "vendor_fs_type=$(BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE)" >> $(1))
@@ -845,12 +941,18 @@ ifneq (,$(INSTALLED_RECOVERYIMAGE_TARGET)$(filter true,$(BOARD_USES_RECOVERY_AS_
 INTERNAL_RECOVERYIMAGE_FILES := $(filter $(TARGET_RECOVERY_OUT)/%, \
     $(ALL_DEFAULT_INSTALLED_MODULES))
 
+#tonykuo
+ifeq ($(TARGET_USERIMAGES_USE_UBIFS),true)
+recovery_ubiformat := $(call intermediates-dir-for,EXECUTABLES,ubiformat_static)/ubiformat_static
+endif
+
 recovery_initrc := $(call include-path-for, recovery)/etc/init.rc
 recovery_sepolicy := $(call intermediates-dir-for,ETC,sepolicy.recovery)/sepolicy.recovery
 recovery_kernel := $(INSTALLED_KERNEL_TARGET) # same as a non-recovery system
 recovery_ramdisk := $(PRODUCT_OUT)/ramdisk-recovery.img
 recovery_build_prop := $(intermediate_system_build_prop)
 recovery_resources_common := $(call include-path-for, recovery)/res
+recovery_ramdisk_bthdr := $(PRODUCT_OUT)/ramdisk-recovery-bthdr.img
 
 # Set recovery_density to the density bucket of the device.
 recovery_density := unknown
@@ -860,6 +962,10 @@ recovery_density := $(filter %dpi,$(PRODUCT_AAPT_PREF_CONFIG))
 else
 # Otherwise, use the default medium density.
 recovery_densities := mdpi
+endif
+
+ifeq ($(MTK_RECOVERY_MEDIUM_RES),yes)
+recovery_density := mdpi
 endif
 
 ifneq (,$(wildcard $(recovery_resources_common)-$(recovery_density)))
@@ -927,6 +1033,11 @@ INTERNAL_RECOVERYIMAGE_ARGS := \
 	--kernel $(recovery_kernel) \
 	--ramdisk $(recovery_ramdisk)
 
+INTERNAL_RECOVERYIMAGE_BTHDR_ARGS := \
+	$(addprefix --second ,$(INSTALLED_2NDBOOTLOADER_TARGET)) \
+	--kernel $(recovery_kernel) \
+	--ramdisk $(recovery_ramdisk_bthdr)
+
 # Assumes this has already been stripped
 ifdef BOARD_KERNEL_CMDLINE
   INTERNAL_RECOVERYIMAGE_ARGS += --cmdline "$(BOARD_KERNEL_CMDLINE)"
@@ -934,9 +1045,24 @@ endif
 ifdef BOARD_KERNEL_BASE
   INTERNAL_RECOVERYIMAGE_ARGS += --base $(BOARD_KERNEL_BASE)
 endif
+
+ifdef BOARD_RAMDISK_OFFSET
+  INTERNAL_RECOVERYIMAGE_ARGS += --ramdisk_offset $(BOARD_RAMDISK_OFFSET)
+endif
+ifdef BOARD_KERNEL_OFFSET
+  INTERNAL_RECOVERYIMAGE_ARGS += --kernel_offset $(BOARD_KERNEL_OFFSET)
+endif
+ifdef BOARD_TAGS_OFFSET
+  INTERNAL_RECOVERYIMAGE_ARGS += --tags_offset $(BOARD_TAGS_OFFSET)
+endif
+
 BOARD_KERNEL_PAGESIZE := $(strip $(BOARD_KERNEL_PAGESIZE))
 ifdef BOARD_KERNEL_PAGESIZE
   INTERNAL_RECOVERYIMAGE_ARGS += --pagesize $(BOARD_KERNEL_PAGESIZE)
+endif
+
+ifdef CUSTOM_BUILD_VERNO
+  INTERNAL_RECOVERYIMAGE_ARGS += --board $(CUSTOM_BUILD_VERNO_HDR)
 endif
 
 # Keys authorized to sign OTA packages this build will accept.  The
@@ -967,6 +1093,8 @@ define build-recoveryimage-target
   $(hide) rsync -a --exclude=etc --exclude=sdcard $(IGNORE_CACHE_LINK) $(TARGET_ROOT_OUT) $(TARGET_RECOVERY_OUT) # "cp -Rf" fails to overwrite broken symlinks on Mac.
   @echo Modifying ramdisk contents...
   $(hide) rm -f $(TARGET_RECOVERY_ROOT_OUT)/init*.rc
+  $(if $(filter true,$(TARGET_USERIMAGES_USE_UBIFS)), \
+    $(hide) cp -f $(recovery_ubiformat) $(TARGET_RECOVERY_ROOT_OUT)/sbin/ubiformat)
   $(hide) cp -f $(recovery_initrc) $(TARGET_RECOVERY_ROOT_OUT)/
   $(hide) rm -f $(TARGET_RECOVERY_ROOT_OUT)/sepolicy
   $(hide) cp -f $(recovery_sepolicy) $(TARGET_RECOVERY_ROOT_OUT)/sepolicy
@@ -975,13 +1103,20 @@ define build-recoveryimage-target
   $(hide) rm -rf $(TARGET_RECOVERY_ROOT_OUT)/res/*
   $(hide) cp -rf $(recovery_resources_common)/* $(TARGET_RECOVERY_ROOT_OUT)/res
   $(hide) cp -f $(recovery_font) $(TARGET_RECOVERY_ROOT_OUT)/res/images/font.png
+  $(if $(filter yes,$(TRUSTONIC_TEE_SUPPORT)), \
+    $(hide) rm -f $(TARGET_RECOVERY_ROOT_OUT)/system/bin/mcDriverDaemon
+    $(hide) mkdir -p $(TARGET_RECOVERY_ROOT_OUT)/system/bin; cp -f $(call intermediates-dir-for,EXECUTABLES,mcDriverDaemon)/mcDriverDaemon $(TARGET_RECOVERY_ROOT_OUT)/system/bin
+    $(hide) rm -fr $(TARGET_RECOVERY_ROOT_OUT)/system/vendor/app/mcRegistry
+    $(hide) mkdir -p $(TARGET_RECOVERY_ROOT_OUT)/system/vendor/app/mcRegistry; cp -f `find $(TARGET_OUT_VENDOR_APPS)/mcRegistry -type f \( -name "*.drbin" -or -name "*.tlbin" \) -print` $(TARGET_RECOVERY_ROOT_OUT)/system/vendor/app/mcRegistry)
+  $(hide) rm -f $(TARGET_RECOVERY_ROOT_OUT)/system/vendor/app/mcRegistry/*
+  $(hide) rm -f $(TARGET_RECOVERY_ROOT_OUT)/sbin/meta_tst
   $(hide) $(foreach item,$(TARGET_PRIVATE_RES_DIRS), \
     cp -rf $(item) $(TARGET_RECOVERY_ROOT_OUT)/$(newline))
   $(hide) $(foreach item,$(recovery_fstab), \
     cp -f $(item) $(TARGET_RECOVERY_ROOT_OUT)/etc/recovery.fstab)
   $(if $(strip $(recovery_wipe)), \
     $(hide) cp -f $(recovery_wipe) $(TARGET_RECOVERY_ROOT_OUT)/etc/recovery.wipe)
-  $(hide) cp $(RECOVERY_INSTALL_OTA_KEYS) $(TARGET_RECOVERY_ROOT_OUT)/res/keys
+  $(hide) cp -f $(RECOVERY_INSTALL_OTA_KEYS) $(TARGET_RECOVERY_ROOT_OUT)/res/keys
   $(hide) cat $(INSTALLED_DEFAULT_PROP_TARGET) $(recovery_build_prop) \
           > $(TARGET_RECOVERY_ROOT_OUT)/default.prop
   $(BOARD_RECOVERY_IMAGE_PREPARE)
@@ -990,6 +1125,12 @@ define build-recoveryimage-target
             rm -rf $(TARGET_RECOVERY_ROOT_OUT)/system; \
             ln -sf /system_root/system $(TARGET_RECOVERY_ROOT_OUT)/system) # Mount the system_root_image to /system_root and symlink /system.
   $(hide) $(MKBOOTFS) -d $(TARGET_OUT) $(TARGET_RECOVERY_ROOT_OUT) | $(MINIGZIP) > $(recovery_ramdisk)
+  $(if $(filter yes,$(MTK_HEADER_SUPPORT)), \
+    $(hide) cp -f $(recovery_ramdisk) $(recovery_ramdisk_bthdr)
+    $(hide) $(HOST_OUT_EXECUTABLES)/mkimage $(recovery_ramdisk_bthdr) ROOTFS 0xffffffff > $(PRODUCT_OUT)/ramdisk_recovery_bthdr.img
+    $(hide) mv $(PRODUCT_OUT)/ramdisk_recovery_bthdr.img $(recovery_ramdisk_bthdr)
+    $(hide) $(HOST_OUT_EXECUTABLES)/mkimage $(recovery_ramdisk) RECOVERY 0xffffffff > $(PRODUCT_OUT)/ramdisk_recovery.img
+    $(hide) mv $(PRODUCT_OUT)/ramdisk_recovery.img $(recovery_ramdisk))
   $(if $(filter true,$(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_SUPPORTS_VBOOT)), \
     $(hide) $(MKBOOTIMG) $(INTERNAL_RECOVERYIMAGE_ARGS) $(INTERNAL_MKBOOTIMG_VERSION_ARGS) $(BOARD_MKBOOTIMG_ARGS) --output $(1).unsigned, \
     $(hide) $(MKBOOTIMG) $(INTERNAL_RECOVERYIMAGE_ARGS) $(INTERNAL_MKBOOTIMG_VERSION_ARGS) $(BOARD_MKBOOTIMG_ARGS) --output $(1) --id > $(RECOVERYIMAGE_ID_FILE))
@@ -1004,6 +1145,9 @@ define build-recoveryimage-target
   $(if $(filter true,$(BOARD_USES_RECOVERY_AS_BOOT)), \
     $(hide) $(call assert-max-image-size,$(1),$(BOARD_BOOTIMAGE_PARTITION_SIZE)), \
     $(hide) $(call assert-max-image-size,$(1),$(BOARD_RECOVERYIMAGE_PARTITION_SIZE)))
+  $(if $(filter yes,$(MTK_HEADER_SUPPORT)), \
+    $(hide) $(MKBOOTIMG) $(INTERNAL_RECOVERYIMAGE_BTHDR_ARGS) $(BOARD_MKBOOTIMG_ARGS) --output $(PRODUCT_OUT)/recovery_bthdr.img
+    $(hide) $(call assert-max-image-size,$(PRODUCT_OUT)/recovery_bthdr.img,$(BOARD_RECOVERYIMAGE_PARTITION_SIZE)))
   @echo ----- Made recovery image: $(1) --------
 endef
 
@@ -1035,6 +1179,9 @@ $(INSTALLED_RECOVERYIMAGE_TARGET): $(MKBOOTFS) $(MKBOOTIMG) $(MINIGZIP) \
 		$(recovery_build_prop) $(recovery_resource_deps) \
 		$(recovery_fstab) \
 		$(RECOVERY_INSTALL_OTA_KEYS)
+ifeq ($(TARGET_USERIMAGES_USE_UBIFS),true)
+$(INSTALLED_RECOVERYIMAGE_TARGET): $(recovery_ubiformat)
+endif
 		$(call build-recoveryimage-target, $@)
 
 ifdef RECOVERY_RESOURCE_ZIP
@@ -1118,6 +1265,7 @@ define create-system-vendor-symlink
 endef
 endif
 
+ifneq ($(TARGET_USERIMAGES_USE_UBIFS),true)
 # $(1): output file
 define build-systemimage-target
   @echo "Target system fs image: $(1)"
@@ -1125,6 +1273,17 @@ define build-systemimage-target
   @mkdir -p $(dir $(1)) $(systemimage_intermediates) && rm -rf $(systemimage_intermediates)/system_image_info.txt
   $(call generate-userimage-prop-dictionary, $(systemimage_intermediates)/system_image_info.txt, \
       skip_fsck=true)
+  $(call generate-mtftl-prop-dictionary, $(systemimage_intermediates)/system_image_info.txt)
+  $(if $(filter $(strip $(MTK_EMULATOR_SUPPORT)),no),
+            python ./build/tools/releasetools/rootcheck.py \
+		$(TARGET_OUT) \
+		$(PRODUCT_OUT)/lk.bin \
+		$(PRODUCT_OUT)/recovery.img \
+		$(PRODUCT_OUT)/boot.img \
+		$(PRODUCT_OUT)/logo.bin \
+		$(TARGET_OUT)/data \
+		$(PRODUCT_OUT)/trustzone.bin,
+            @echo no need rootcheck)
   $(hide) PATH=$(foreach p,$(INTERNAL_USERIMAGES_BINARY_PATHS),$(p):)$$PATH \
       ./build/tools/releasetools/build_image.py \
       $(TARGET_OUT) $(systemimage_intermediates)/system_image_info.txt $(1) $(TARGET_OUT) \
@@ -1143,6 +1302,32 @@ define build-systemimage-target
            exit 1 )
 endef
 
+else # TARGET_USERIMAGES_USE_UBIFS == true
+
+## Generate a ubifs image
+define build-systemimage-target
+    @echo "Target system fs ubi image: $(1)"
+    @mkdir -p $(dir $(1))
+    $(if $(filter $(strip $(MTK_EMULATOR_SUPPORT)),no),
+      python ./build/tools/releasetools/rootcheck.py \
+	$(TARGET_OUT) \
+	$(PRODUCT_OUT)/lk.bin \
+	$(PRODUCT_OUT)/recovery.img \
+	$(PRODUCT_OUT)/boot.img \
+	$(PRODUCT_OUT)/logo.bin \
+	$(TARGET_OUT)/data \
+	$(PRODUCT_OUT)/trustzone.bin,
+      @echo no need rootcheck)
+    @mkdir -p $(dir $(1)) $(systemimage_intermediates) && rm -rf $(systemimage_intermediates)/system_image_info.txt
+    $(call generate-userimage-prop-dictionary, $(systemimage_intermediates)/system_image_info.txt, skip_fsck=true)
+    $(call generate-ubifs-prop-dictionary, $(systemimage_intermediates)/system_image_info.txt)
+    $(hide) PATH=$(foreach p,$(INTERNAL_USERIMAGES_BINARY_PATHS),$(p):)$$PATH \
+        ./build/tools/releasetools/build_image.py \
+        $(TARGET_OUT) $(systemimage_intermediates)/system_image_info.txt $(1) $(TARGET_OUT)
+endef
+
+endif # TARGET_USERIMAGES_USE_UBIFS
+
 $(BUILT_SYSTEMIMAGE): $(FULL_SYSTEMIMAGE_DEPS) $(INSTALLED_FILES_FILE)
 	$(call build-systemimage-target,$@)
 
@@ -1157,7 +1342,7 @@ SYSTEMIMAGE_SOURCE_DIR := $(TARGET_OUT)
 ifneq ($(INSTALLED_RECOVERYIMAGE_TARGET),)
 ifneq ($(BOARD_USES_FULL_RECOVERY_IMAGE),true)
 intermediates := $(call intermediates-dir-for,PACKAGING,recovery_patch)
-RECOVERY_FROM_BOOT_PATCH := $(intermediates)/recovery_from_boot.p
+RECOVERY_FROM_BOOT_PATCH := $(intermediates)/recovery-from-boot.p
 $(RECOVERY_FROM_BOOT_PATCH): $(INSTALLED_RECOVERYIMAGE_TARGET) \
                              $(INSTALLED_BOOTIMAGE_TARGET) \
 			     $(HOST_OUT_EXECUTABLES)/imgdiff \
@@ -1165,6 +1350,7 @@ $(RECOVERY_FROM_BOOT_PATCH): $(INSTALLED_RECOVERYIMAGE_TARGET) \
 	@echo "Construct recovery from boot"
 	mkdir -p $(dir $@)
 	PATH=$(HOST_OUT_EXECUTABLES):$$PATH $(HOST_OUT_EXECUTABLES)/imgdiff $(INSTALLED_BOOTIMAGE_TARGET) $(INSTALLED_RECOVERYIMAGE_TARGET) $@
+	$(hide) $(ACP) $@ $(TARGET_OUT)
 else # $(BOARD_USES_FULL_RECOVERY_IMAGE) == true
 RECOVERY_FROM_BOOT_PATCH := $(INSTALLED_RECOVERYIMAGE_TARGET)
 endif
@@ -1297,6 +1483,12 @@ ifneq (,$(filter platform platform-java, $(MAKECMDGOALS)))
 $(call dist-for-goals, platform platform-java, $(INSTALLED_PLATFORM_ZIP))
 endif
 
+
+# -----------------------------------------------------------------
+##begin mediatek add a new custom image
+include build/core/customimage.mk
+##end mediatek add a new custom image
+
 # -----------------------------------------------------------------
 ## boot tarball
 define build-boottarball-target
@@ -1332,9 +1524,11 @@ INTERNAL_USERDATAIMAGE_FILES := \
 
 # Don't build userdata.img if it's extfs but no partition size
 skip_userdata.img :=
+ifneq ($(TARGET_USERIMAGES_USE_UBIFS),true)
 ifdef INTERNAL_USERIMAGES_EXT_VARIANT
 ifndef BOARD_USERDATAIMAGE_PARTITION_SIZE
 skip_userdata.img := true
+endif
 endif
 endif
 
@@ -1343,16 +1537,32 @@ userdataimage_intermediates := \
     $(call intermediates-dir-for,PACKAGING,userdata)
 BUILT_USERDATAIMAGE_TARGET := $(PRODUCT_OUT)/userdata.img
 
+ifneq ($(TARGET_USERIMAGES_USE_UBIFS),true)
 define build-userdataimage-target
   $(call pretty,"Target userdata fs image: $(INSTALLED_USERDATAIMAGE_TARGET)")
   @mkdir -p $(TARGET_OUT_DATA)
   @mkdir -p $(userdataimage_intermediates) && rm -rf $(userdataimage_intermediates)/userdata_image_info.txt
   $(call generate-userimage-prop-dictionary, $(userdataimage_intermediates)/userdata_image_info.txt, skip_fsck=true)
+  $(call generate-mtftl-prop-dictionary, $(userdataimage_intermediates)/userdata_image_info.txt)
   $(hide) PATH=$(foreach p,$(INTERNAL_USERIMAGES_BINARY_PATHS),$(p):)$$PATH \
       ./build/tools/releasetools/build_image.py \
       $(TARGET_OUT_DATA) $(userdataimage_intermediates)/userdata_image_info.txt $(INSTALLED_USERDATAIMAGE_TARGET) $(TARGET_OUT)
   $(hide) $(call assert-max-image-size,$(INSTALLED_USERDATAIMAGE_TARGET),$(BOARD_USERDATAIMAGE_PARTITION_SIZE))
 endef
+else # TARGET_USERIMAGES_USE_UBIFS == true
+## Generate a ubifs image
+define build-userdataimage-target
+    $(call pretty,"Target userdata fs image: $(INSTALLED_USERDATAIMAGE_TARGET)")
+    @mkdir -p $(TARGET_OUT_DATA)
+    @mkdir -p $(userdataimage_intermediates) && rm -rf $(userdataimage_intermediates)/userdata_image_info.txt
+    $(call generate-userimage-prop-dictionary, $(userdataimage_intermediates)/userdata_image_info.txt, skip_fsck=true)
+    $(call generate-ubifs-prop-dictionary, $(userdataimage_intermediates)/userdata_image_info.txt)
+    $(hide) PATH=$(foreach p,$(INTERNAL_USERIMAGES_BINARY_PATHS),$(p):)$$PATH \
+        ./build/tools/releasetools/build_image.py \
+        $(TARGET_OUT_DATA) $(userdataimage_intermediates)/userdata_image_info.txt $(INSTALLED_USERDATAIMAGE_TARGET) $(TARGET_OUT)
+endef
+
+endif # TARGET_USERIMAGES_USE_UBIFS
 
 # We just build this directly to the install location.
 INSTALLED_USERDATAIMAGE_TARGET := $(BUILT_USERDATAIMAGE_TARGET)
@@ -1719,6 +1929,9 @@ $(BUILT_TARGET_FILES_PACKAGE): \
 		$(APKCERTS_FILE) \
 		$(HOST_OUT_EXECUTABLES)/fs_config \
 		| $(ACP)
+ifeq ($(TARGET_USERIMAGES_USE_EXT4),true)
+$(BUILT_TARGET_FILES_PACKAGE): $(INSTALLED_CACHEIMAGE_TARGET)
+endif
 	@echo "Package target files: $@"
 	$(hide) rm -rf $@ $(zip_root)
 	$(hide) mkdir -p $(dir $@) $(zip_root)
@@ -1729,6 +1942,10 @@ ifneq (,$(INSTALLED_RECOVERYIMAGE_TARGET)$(filter true,$(BOARD_USES_RECOVERY_AS_
 		$(TARGET_RECOVERY_ROOT_OUT),$(zip_root)/$(PRIVATE_RECOVERY_OUT)/RAMDISK)
 ifdef INSTALLED_KERNEL_TARGET
 	$(hide) $(ACP) $(INSTALLED_KERNEL_TARGET) $(zip_root)/$(PRIVATE_RECOVERY_OUT)/kernel
+	$(hide) $(ACP) $(recovery_ramdisk) $(zip_root)/RECOVERY/ramdisk
+ifeq ($(MTK_HEADER_SUPPORT),yes)
+	$(hide) $(ACP) $(recovery_ramdisk_bthdr) $(zip_root)/RECOVERY/ramdisk-bthdr
+endif
 endif
 ifdef INSTALLED_2NDBOOTLOADER_TARGET
 	$(hide) $(ACP) \
@@ -1744,6 +1961,19 @@ ifdef BOARD_KERNEL_PAGESIZE
 	$(hide) echo "$(BOARD_KERNEL_PAGESIZE)" > $(zip_root)/$(PRIVATE_RECOVERY_OUT)/pagesize
 endif
 endif # INSTALLED_RECOVERYIMAGE_TARGET defined or BOARD_USES_RECOVERY_AS_BOOT is true
+
+ifdef BOARD_RAMDISK_OFFSET
+	$(hide) echo "$(BOARD_RAMDISK_OFFSET)" > $(zip_root)/RECOVERY/ramdisk_offset
+endif
+ifdef BOARD_KERNEL_OFFSET
+	$(hide) echo "$(BOARD_KERNEL_OFFSET)" > $(zip_root)/RECOVERY/kernel_offset
+endif
+ifdef BOARD_TAGS_OFFSET
+	$(hide) echo "$(BOARD_TAGS_OFFSET)" > $(zip_root)/RECOVERY/tags_offset
+endif
+ifdef CUSTOM_BUILD_VERNO
+	$(hide) echo -n $(CUSTOM_BUILD_VERNO_HDR) > $(zip_root)/RECOVERY/board
+endif
 	@# Components of the boot image
 	$(hide) mkdir -p $(zip_root)/BOOT
 ifeq ($(BOARD_BUILD_SYSTEM_ROOT_IMAGE),true)
@@ -1758,6 +1988,7 @@ endif
 ifneq ($(BOARD_USES_RECOVERY_AS_BOOT),true)
 ifdef INSTALLED_KERNEL_TARGET
 	$(hide) $(ACP) $(INSTALLED_KERNEL_TARGET) $(zip_root)/BOOT/kernel
+	$(hide) $(ACP) $(INSTALLED_RAMDISK_TARGET) $(zip_root)/BOOT/ramdisk
 endif
 ifdef INSTALLED_2NDBOOTLOADER_TARGET
 	$(hide) $(ACP) \
@@ -1769,8 +2000,20 @@ endif
 ifdef BOARD_KERNEL_BASE
 	$(hide) echo "$(BOARD_KERNEL_BASE)" > $(zip_root)/BOOT/base
 endif
+ifdef BOARD_RAMDISK_OFFSET
+	$(hide) echo "$(BOARD_RAMDISK_OFFSET)" > $(zip_root)/BOOT/ramdisk_offset
+endif
+ifdef BOARD_KERNEL_OFFSET
+	$(hide) echo "$(BOARD_KERNEL_OFFSET)" > $(zip_root)/BOOT/kernel_offset
+endif
+ifdef BOARD_TAGS_OFFSET
+	$(hide) echo "$(BOARD_TAGS_OFFSET)" > $(zip_root)/BOOT/tags_offset
+endif
 ifdef BOARD_KERNEL_PAGESIZE
 	$(hide) echo "$(BOARD_KERNEL_PAGESIZE)" > $(zip_root)/BOOT/pagesize
+endif
+ifdef CUSTOM_BUILD_VERNO
+	$(hide) echo -n $(CUSTOM_BUILD_VERNO_HDR) > $(zip_root)/BOOT/board
 endif
 endif # BOARD_USES_RECOVERY_AS_BOOT
 	$(hide) $(foreach t,$(INSTALLED_RADIOIMAGE_TARGET),\
@@ -1787,6 +2030,9 @@ ifdef BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE
 	$(hide) $(call package_files-copy-root, \
 		$(TARGET_OUT_VENDOR),$(zip_root)/VENDOR)
 endif
+	$(if $(BOARD_CUSTOMIMAGE_PARTITION_SIZE), \
+	$(hide) $(call package_files-copy-root, \
+		$(TARGET_CUSTOM_OUT),$(zip_root)/CUSTOM))
 ifdef INSTALLED_SYSTEMOTHERIMAGE_TARGET
 	@# Contents of the system_other image
 	$(hide) $(call package_files-copy-root, \
@@ -1845,6 +2091,9 @@ endif
 	$(hide) echo "multistage_support=1" >> $(zip_root)/META/misc_info.txt
 	$(hide) echo "update_rename_support=1" >> $(zip_root)/META/misc_info.txt
 	$(hide) echo "blockimgdiff_versions=1,2,3,4" >> $(zip_root)/META/misc_info.txt
+ifeq ($(MTK_HEADER_SUPPORT),yes)
+	$(hide) echo "mtk_header_support=1" >> $(zip_root)/META/misc_info.txt
+endif
 ifneq ($(OEM_THUMBPRINT_PROPERTIES),)
 	# OTA scripts are only interested in fingerprint related properties
 	$(hide) echo "oem_fingerprint_properties=$(OEM_THUMBPRINT_PROPERTIES)" >> $(zip_root)/META/misc_info.txt
@@ -1864,7 +2113,16 @@ endif
 ifeq ($(BOARD_USES_FULL_RECOVERY_IMAGE),true)
 	$(hide) echo "full_recovery_image=true" >> $(zip_root)/META/misc_info.txt
 endif
+ifeq ($(TARGET_USERIMAGES_USE_UBIFS),true)
+	$(call generate-ubifs-prop-dictionary, $(zip_root)/META/misc_info.txt)
+endif
 	$(call generate-userimage-prop-dictionary, $(zip_root)/META/misc_info.txt)
+
+	@# sign image used to get boot and recovery sig files
+	$(hide) $(SHELL) vendor/mediatek/proprietary/scripts/sign-image/sign_image.sh
+	@#prepare image and update list for OTA upgrade used
+	$(hide) ./device/mediatek/build/releasetools/mt_ota_preprocess.py $(zip_root) $(PRODUCT_OUT) $(PRODUCT_OUT)/ota_update_list.txt
+
 ifneq ($(INSTALLED_RECOVERYIMAGE_TARGET),)
 	$(hide) PATH=$(foreach p,$(INTERNAL_USERIMAGES_BINARY_PATHS),$(p):)$$PATH MKBOOTIMG=$(MKBOOTIMG) \
 	    ./build/tools/releasetools/make_recovery_patch $(zip_root) $(zip_root)
@@ -1910,12 +2168,16 @@ endif
 ifneq ($(INSTALLED_RECOVERYIMAGE_TARGET),)
 	$(hide) zipinfo -1 $@ | awk 'BEGIN { FS="RECOVERY/RAMDISK/" } /^RECOVERY\/RAMDISK\// {print $$2}' | $(HOST_OUT_EXECUTABLES)/fs_config -C -D $(TARGET_OUT) -S $(SELINUX_FC) > $(zip_root)/META/recovery_filesystem_config.txt
 endif
+	$(if $(BOARD_CUSTOMIMAGE_PARTITION_SIZE), \
+	$(hide) zipinfo -1 $@ | awk 'BEGIN { FS="CUSTOM/" } /^CUSTOM\// {print "custom/" $$2}' | $(HOST_OUT_EXECUTABLES)/fs_config -C -D $(TARGET_OUT) -S $(SELINUX_FC) > $(zip_root)/META/custom_filesystem_config.txt)
 ifdef INSTALLED_SYSTEMOTHERIMAGE_TARGET
 	$(hide) zipinfo -1 $@ | awk 'BEGIN { FS="SYSTEM_OTHER/" } /^SYSTEM_OTHER\// { print "system/" $$2}' | $(HOST_OUT_EXECUTABLES)/fs_config -C -D $(TARGET_OUT) -S $(SELINUX_FC) > $(zip_root)/META/system_other_filesystem_config.txt
 endif
 	$(hide) (cd $(zip_root) && zip -qX ../$(notdir $@) META/*filesystem_config.txt)
 	$(hide) PATH=$(foreach p,$(INTERNAL_USERIMAGES_BINARY_PATHS),$(p):)$$PATH MKBOOTIMG=$(MKBOOTIMG) \
 	    ./build/tools/releasetools/add_img_to_target_files -a -v -p $(HOST_OUT) $@
+	$(hide) ./build/tools/releasetools/replace_img_from_target_files.py $@ $(PRODUCT_OUT)
+
 
 .PHONY: target-files-package
 target-files-package: $(BUILT_TARGET_FILES_PACKAGE)
@@ -1942,9 +2204,10 @@ $(INTERNAL_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE)
 	@echo "Package OTA: $@"
 	$(hide) PATH=$(foreach p,$(INTERNAL_USERIMAGES_BINARY_PATHS),$(p):)$$PATH MKBOOTIMG=$(MKBOOTIMG) \
 	   ./build/tools/releasetools/ota_from_target_files -v \
-	   --block \
+	   $(if $(filter true,$(TARGET_USERIMAGES_USE_UBIFS)),-g,--block) \
 	   -p $(HOST_OUT) \
 	   -k $(KEY_CERT_PAIR) \
+	   -s ./device/mediatek/build/releasetools/mt_ota_from_target_files \
 	   $(if $(OEM_OTA_CONFIG), -o $(OEM_OTA_CONFIG)) \
 	   $(BUILT_TARGET_FILES_PACKAGE) $@
 
@@ -2117,20 +2380,34 @@ ATREE_FILES :=
 
 # if we don't have a real list, then use "everything"
 ifeq ($(strip $(ATREE_FILES)),)
+ifneq ($(strip $(BUILD_MTK_SDK)), sdk)
 ATREE_FILES := \
 	$(ALL_PREBUILT) \
 	$(ALL_DEFAULT_INSTALLED_MODULES) \
 	$(INSTALLED_RAMDISK_TARGET) \
 	$(ALL_DOCS) \
 	$(ALL_SDK_FILES)
+else
+ATREE_FILES := \
+	$(ALL_PREBUILT) \
+	$(ALL_COPIED_HEADERS) \
+	$(ALL_DOCS) \
+	$(ALL_SDK_FILES)
+endif
 endif
 
 atree_dir := development/build
 
 
+ifneq ($(strip $(BUILD_MTK_SDK)), sdk)
 sdk_atree_files := \
 	$(atree_dir)/sdk.exclude.atree \
 	$(atree_dir)/sdk-$(HOST_OS)-$(SDK_HOST_ARCH).atree
+else
+sdk_atree_files := \
+	$(atree_dir)/sdk.exclude.atree \
+	$(atree_dir)/sdk-$(HOST_OS)-$(SDK_HOST_ARCH)-no-img.atree
+endif
 
 # development/build/sdk-android-<abi>.atree is used to differentiate
 # between architecture models (e.g. ARMv5TE versus ARMv7) when copying
@@ -2143,11 +2420,16 @@ endif
 ifneq ($(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_SDK_ATREE_FILES),)
 sdk_atree_files += $(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_SDK_ATREE_FILES)
 else
-sdk_atree_files += $(atree_dir)/sdk.atree
+    ifneq ($(strip $(BUILD_MTK_SDK)), sdk)
+    sdk_atree_files += $(atree_dir)/sdk.atree
+    else
+    sdk_atree_files += $(atree_dir)/sdk-no-img.atree
+    endif
 endif
 
 include $(BUILD_SYSTEM)/sdk_font.mk
 
+ifneq ($(strip $(BUILD_MTK_SDK)), sdk)
 deps := \
 	$(target_notice_file_txt) \
 	$(tools_notice_file_txt) \
@@ -2163,6 +2445,15 @@ deps := \
 	$(HOST_OUT_EXECUTABLES)/atree \
 	$(HOST_OUT_EXECUTABLES)/line_endings \
 	$(SDK_FONT_DEPS)
+else
+deps := \
+	$(OUT_DOCS)/offline-sdk-timestamp \
+	$(ATREE_FILES) \
+	$(sdk_atree_files) \
+	$(HOST_OUT_EXECUTABLES)/atree \
+	$(HOST_OUT_EXECUTABLES)/line_endings \
+	$(SDK_FONT_DEPS)
+endif
 
 INTERNAL_SDK_TARGET := $(sdk_dir)/$(sdk_name).zip
 $(INTERNAL_SDK_TARGET): PRIVATE_NAME := $(sdk_name)
@@ -2205,8 +2496,8 @@ $(INTERNAL_SDK_TARGET): $(deps)
 			-v "JACK_SDKTOOL_VERSION=$(JACK_SDKTOOL_VERSION)" \
 			-o $(PRIVATE_DIR) && \
 		cp -f $(target_notice_file_txt) \
-				$(PRIVATE_DIR)/system-images/android-$(PLATFORM_VERSION)/$(TARGET_CPU_ABI)/NOTICE.txt && \
-		cp -f $(tools_notice_file_txt) $(PRIVATE_DIR)/platform-tools/NOTICE.txt && \
+				$(PRIVATE_DIR)/system-images/android-$(PLATFORM_VERSION)/$(TARGET_CPU_ABI)/NOTICE.txt | tee && \
+		cp -f $(tools_notice_file_txt) $(PRIVATE_DIR)/platform-tools/NOTICE.txt | tee && \
 		HOST_OUT_EXECUTABLES=$(HOST_OUT_EXECUTABLES) HOST_OS=$(HOST_OS) \
 			development/build/tools/sdk_clean.sh $(PRIVATE_DIR) && \
 		chmod -R ug+rwX $(PRIVATE_DIR) && \

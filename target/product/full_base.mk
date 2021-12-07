@@ -1,4 +1,9 @@
 #
+# Copyright (C) 2014 MediaTek Inc.
+# Modification based on code covered by the mentioned copyright
+# and/or permission notice(s).
+#
+#
 # Copyright (C) 2009 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,12 +24,13 @@
 # build of the emulator, but all those aspects can be overridden
 # in inherited configurations.
 
+#Remove libfwdlockengine from image, we do use libdrmmtkplugin.so instead it
+#Modify by Rui.hu
 PRODUCT_PACKAGES := \
-    libfwdlockengine \
-    OpenWnn \
-    libWnnEngDic \
-    libWnnJpnDic \
-    libwnndict \
+#    OpenWnn \
+#    libWnnEngDic \
+#    libWnnJpnDic \
+#    libwnndict \
     WAPPushManager
 
 PRODUCT_PACKAGES += \

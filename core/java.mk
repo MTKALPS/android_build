@@ -52,6 +52,11 @@ else
   my_jack_min_sdk_version := $(PLATFORM_JACK_MIN_SDK_VERSION)
   ifneq ($(LOCAL_NO_STANDARD_LIBRARIES),true)
     LOCAL_JAVA_LIBRARIES := $(TARGET_DEFAULT_JAVA_LIBRARIES) $(LOCAL_JAVA_LIBRARIES)
+ifneq ($(TARGET_BUILD_PDK),true)
+#ifneq ($(filter mediatek-common,$(ALL_MODULES)),)
+    LOCAL_JAVA_LIBRARIES := mediatek-common $(LOCAL_JAVA_LIBRARIES)
+#endif
+endif
   endif
 endif
 
@@ -541,9 +546,11 @@ ifeq ($(filter shrinktests,$(LOCAL_PROGUARD_ENABLED)),)
 common_proguard_flags += -dontshrink # don't shrink tests by default
 endif # shrinktests
 endif # test package
-ifeq ($(filter obfuscation,$(LOCAL_PROGUARD_ENABLED)),)
+ifeq ($(filter obfuscation custom,$(LOCAL_PROGUARD_ENABLED)),)
 # By default no obfuscation
 common_proguard_flags += -dontobfuscate
+else
+common_proguard_flags += -keepparameternames
 endif  # No obfuscation
 ifeq ($(filter optimization,$(LOCAL_PROGUARD_ENABLED)),)
 # By default no optimization
@@ -551,7 +558,7 @@ common_proguard_flags += -dontoptimize
 endif  # No optimization
 
 ifdef LOCAL_INSTRUMENTATION_FOR
-ifeq ($(filter obfuscation,$(LOCAL_PROGUARD_ENABLED)),)
+ifeq ($(filter obfuscation custom,$(LOCAL_PROGUARD_ENABLED)),)
 # If no obfuscation, link in the instrmented package's classes.jar as a library.
 # link_instr_classes_jar is defined in base_rule.mk
 # jack already has this library in its classpath and doesn't support jars

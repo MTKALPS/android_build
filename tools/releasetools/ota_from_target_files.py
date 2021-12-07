@@ -166,6 +166,7 @@ OPTIONS.oem_source = None
 OPTIONS.oem_no_mount = False
 OPTIONS.fallback_to_full = True
 OPTIONS.full_radio = False
+OPTIONS.ubifs = False
 OPTIONS.full_bootloader = False
 # Stash size cannot exceed cache_size * threshold.
 OPTIONS.cache_size = None
@@ -428,12 +429,13 @@ def CopyPartitionFiles(itemset, input_zip, output_zip=None, substitute=None):
         fn = info2.filename = partition + "/" + basefilename
         if substitute and fn in substitute and substitute[fn] is None:
           continue
-        if output_zip is not None:
-          if substitute and fn in substitute:
-            data = substitute[fn]
-          else:
-            data = input_zip.read(info.filename)
-          common.ZipWriteStr(output_zip, info2, data)
+        if not OPTIONS.ubifs:
+          if output_zip is not None:
+            if substitute and fn in substitute:
+              data = substitute[fn]
+            else:
+              data = input_zip.read(info.filename)
+            common.ZipWriteStr(output_zip, info2, data)
         if fn.endswith("/"):
           itemset.Get(fn[:-1], is_dir=True)
         else:
@@ -450,6 +452,20 @@ def SignOutput(temp_zip_name, output_zip_name):
   common.SignFile(temp_zip_name, output_zip_name, OPTIONS.package_key, pw,
                   whole_file=True)
 
+#erinlo 2013-05-30
+#copy bromm_lite from /system/bin to META-INF/com/google/android/
+def ModemPackage(input_zip, output_zip, modem_modify_cnt):
+  brom_local_path = "SYSTEM/bin/brom_lite"
+  try:
+    input_zip.open(brom_local_path)
+    print "modem_modify_cnt = %d" % (modem_modify_cnt)
+    if modem_modify_cnt > 0:
+      print("copy brom_lite binary")
+      data = input_zip.read(brom_local_path)
+      common.ZipWriteStr(output_zip, "META-INF/com/google/android/bromLite-binary",
+                     data, perms=0755)
+  except:
+    print sys.exc_info()[0],sys.exc_info()[1]
 
 def AppendAssertions(script, info_dict, oem_dict=None):
   oem_props = info_dict.get("oem_fingerprint_properties")
@@ -471,6 +487,13 @@ def HasRecoveryPatch(target_files_zip):
   namelist = [name for name in target_files_zip.namelist()]
   return ("SYSTEM/recovery-from-boot.p" in namelist or
           "SYSTEM/etc/recovery.img" in namelist)
+
+def HasCustomPartition(target_files_zip):
+  try:
+    target_files_zip.getinfo("CUSTOM/")
+    return True
+  except KeyError:
+    return False
 
 def HasVendorPartition(target_files_zip):
   try:
@@ -497,11 +520,11 @@ def CalculateFingerprint(oem_props, oem_dict, info_dict):
 
 def GetImage(which, tmpdir, info_dict):
   # Return an image object (suitable for passing to BlockImageDiff)
-  # for the 'which' partition (most be "system" or "vendor").  If a
+  # for the 'which' partition (most be "system" or "vendor" or "custom").  If a
   # prebuilt image and file map are found in tmpdir they are used,
   # otherwise they are reconstructed from the individual files.
 
-  assert which in ("system", "vendor")
+  assert which in ("system", "vendor", "custom")
 
   path = os.path.join(tmpdir, "IMAGES", which + ".img")
   mappath = os.path.join(tmpdir, "IMAGES", which + ".map")
@@ -524,6 +547,9 @@ def GetImage(which, tmpdir, info_dict):
           tmpdir, info_dict, block_list=mappath)
     elif which == "vendor":
       path = add_img_to_target_files.BuildVendor(
+          tmpdir, info_dict, block_list=mappath)
+    elif which == "custom":
+      path = add_img_to_target_files.BuildCustom(
           tmpdir, info_dict, block_list=mappath)
 
   # Bug: http://b/20939131
@@ -613,6 +639,10 @@ def WriteFullOTAPackage(input_zip, output_zip):
         "two-step packages only supported on devices with EMMC /misc partitions"
     bcb_dev = {"bcb_dev": fs.device}
     common.ZipWriteStr(output_zip, "recovery.img", recovery_img.data)
+    if OPTIONS.info_dict.get("mtk_header_support", None):
+      recovery_bthdr_img = common.GetBootableImage("recovery_bthdr.img", "recovery_bthdr.img",
+                                                   OPTIONS.input_tmp, "RECOVERY")
+      common.ZipWriteStr(output_zip, "recovery_bthdr.img", recovery_bthdr_img.data)
     script.AppendExtra("""
 if get_stage("%(bcb_dev)s") == "2/3" then
 """ % bcb_dev)
@@ -635,6 +665,8 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
     system_progress -= 0.1
   if HasVendorPartition(input_zip):
     system_progress -= 0.1
+  if HasCustomPartition(input_zip):
+    system_progress -= 0.1
 
   # Place a copy of file_contexts.bin into the OTA package which will be used
   # by the recovery program.
@@ -645,6 +677,9 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
 
   system_items = ItemSet("system", "META/filesystem_config.txt")
   script.ShowProgress(system_progress, 0)
+  #check if slc
+  mtslc_support = OPTIONS.info_dict.get("mtslc_support", "")
+  print "mtslc_support = " + mtslc_support
 
   if block_based:
     # Full OTA is done as an "incremental" against an empty source
@@ -656,14 +691,52 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
     system_diff = common.BlockDifference("system", system_tgt, src=None)
     system_diff.WriteScript(script, output_zip)
   else:
-    script.FormatPartition("/system")
-    script.Mount("/system", recovery_mount_options)
-    if not has_recovery_patch:
-      script.UnpackPackageDir("recovery", "/system")
-    script.UnpackPackageDir("system", "/system")
+    if OPTIONS.ubifs:
+      try:
+        system_img = input_zip.read("IMAGES/android.fixup.img")
+      except:
+        print "android.fixup.img not exists!!!"
+      common.ZipWriteStr(output_zip, "system.img", system_img)
+      if mtslc_support.startswith("yes"):
+        script.WriteSparseImageUbifs("system", "system.img")
+      else:
+        script.WriteRawImageUbifs("system", "system.img")
+      if not has_recovery_patch:
+        script.UnpackPackageDir("recovery", "/system")
+      symlinks = CopyPartitionFiles(system_items, input_zip, output_zip)
+    else:
+      script.FormatPartition("/system")
+      script.Mount("/system", recovery_mount_options)
+      if not has_recovery_patch:
+        script.UnpackPackageDir("recovery", "/system")
+      script.UnpackPackageDir("system", "/system")
+      symlinks = CopyPartitionFiles(system_items, input_zip, output_zip)
+      script.MakeSymlinks(symlinks)
 
-    symlinks = CopyPartitionFiles(system_items, input_zip, output_zip)
-    script.MakeSymlinks(symlinks)
+  try:
+    custom_size = OPTIONS.info_dict["custom_size"]
+  except:
+    custom_size = None
+
+  if custom_size is not None:
+    if (custom_size > 0) and (HasCustomPartition(input_zip) == True):
+      custom_items = ItemSet("custom", "META/custom_filesystem_config.txt")
+
+      if block_based:
+        custom_tgt = GetImage("custom", OPTIONS.input_tmp, OPTIONS.info_dict)
+        custom_tgt.ResetFileMap()
+        custom_diff = common.BlockDifference("custom", custom_tgt)
+        custom_diff.WriteScript(script, output_zip)
+      else:
+        script.FormatPartition("/custom")
+        script.Mount("/custom")
+        script.UnpackPackageDir("custom", "/custom")
+
+      symlinks = CopyPartitionFiles(custom_items, input_zip, output_zip)
+      script.MakeSymlinks(symlinks)
+
+      custom_items.GetMetadata(input_zip)
+      custom_items.Get("custom").SetPermissions(script)
 
   boot_img = common.GetBootableImage(
       "boot.img", "boot.img", OPTIONS.input_tmp, "BOOT")
@@ -698,6 +771,27 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
 
       vendor_items.GetMetadata(input_zip)
       vendor_items.Get("vendor").SetPermissions(script)
+
+  if HasCustomPartition(input_zip):
+    custom_items = ItemSet("custom", "META/custom_filesystem_config.txt")
+    script.ShowProgress(0.1, 0)
+
+    if block_based:
+      custom_tgt = GetImage("custom", OPTIONS.input_tmp, OPTIONS.info_dict)
+      custom_tgt.ResetFileMap()
+      custom_diff = common.BlockDifference("custom", custom_tgt)
+      custom_diff.WriteScript(script, output_zip)
+    else:
+      script.FormatPartition("/custom")
+      script.Mount("/custom")
+      script.UnpackPackageDir("custom", "/custom")
+
+      symlinks = CopyPartitionFiles(custom_items, input_zip, output_zip)
+      script.MakeSymlinks(symlinks)
+
+      custom_items.GetMetadata(input_zip)
+      custom_items.Get("custom").SetPermissions(script)
+
 
   common.CheckSize(boot_img.data, "boot.img", OPTIONS.info_dict)
   common.ZipWriteStr(output_zip, "boot.img", boot_img.data)
@@ -909,6 +1003,16 @@ def WriteBlockIncrementalOTAPackage(target_zip, source_zip, output_zip):
   else:
     vendor_diff = None
 
+  if HasCustomPartition(target_zip):
+    if not HasCustomPartition(source_zip):
+      raise RuntimeError("can't generate incremental that adds /custom")
+    custom_src = GetImage("custom", OPTIONS.source_tmp, OPTIONS.source_info_dict)
+    custom_tgt = GetImage("custom", OPTIONS.target_tmp, OPTIONS.target_info_dict)
+    custom_diff = common.BlockDifference("custom", custom_tgt, custom_src,
+                                         version=blockimgdiff_version)
+  else:
+    custom_diff = None
+
   AppendAssertions(script, OPTIONS.target_info_dict, oem_dict)
   device_specific.IncrementalOTA_Assertions()
 
@@ -935,13 +1039,17 @@ def WriteBlockIncrementalOTAPackage(target_zip, source_zip, output_zip):
   #    (allow recovery to mark itself finished and reboot)
 
   if OPTIONS.two_step:
-    if not OPTIONS.source_info_dict.get("multistage_support", None):
+    if not OPTIONS.info_dict.get("multistage_support", None):
       assert False, "two-step packages not supported by this build"
-    fs = OPTIONS.source_info_dict["fstab"]["/misc"]
+    fs = OPTIONS.info_dict["fstab"]["/misc"]
     assert fs.fs_type.upper() == "EMMC", \
         "two-step packages only supported on devices with EMMC /misc partitions"
     bcb_dev = {"bcb_dev": fs.device}
     common.ZipWriteStr(output_zip, "recovery.img", target_recovery.data)
+    if OPTIONS.info_dict.get("mtk_header_support", None):
+      target_recovery_bthdr = common.GetBootableImage(
+          "/tmp/recovery_bthdr.img", "recovery_bthdr.img", OPTIONS.target_tmp, "RECOVERY")
+      common.ZipWriteStr(output_zip, "recovery_bthdr.img", target_recovery_bthdr.data)
     script.AppendExtra("""
 if get_stage("%(bcb_dev)s") == "2/3" then
 """ % bcb_dev)
@@ -989,8 +1097,7 @@ else if get_stage("%(bcb_dev)s") != "3/3" then
     size.append(vendor_diff.required_cache)
 
   if updating_boot:
-    boot_type, boot_device = common.GetTypeAndDevice(
-        "/boot", OPTIONS.source_info_dict)
+    boot_type, boot_device = common.GetTypeAndDevice("/boot", OPTIONS.info_dict)
     d = common.Difference(target_boot, source_boot)
     _, _, d = d.ComputePatch()
     if d is None:
@@ -1037,6 +1144,9 @@ else
 
   if vendor_diff:
     vendor_diff.WriteScript(script, output_zip, progress=0.1)
+
+  if custom_diff:
+    custom_diff.WriteScript(script, output_zip, progress=0.1)
 
   if OPTIONS.two_step:
     common.ZipWriteStr(output_zip, "boot.img", target_boot.data)
@@ -1386,10 +1496,16 @@ class FileDifference(object):
 
     common.ComputeDifferences(diffs)
 
+    #wschen 2013-05-31
+    try:
+      cache_size = OPTIONS.target_info_dict["cache_size"]
+    except:
+      cache_size = None
+
     for diff in diffs:
       tf, sf, d = diff.GetPatch()
       path = "/".join(tf.name.split("/")[:-1])
-      if d is None or len(d) > tf.size * OPTIONS.patch_threshold or \
+      if d is None or len(d) > tf.size * OPTIONS.patch_threshold or (cache_size is not None and (sf.size > (cache_size * OPTIONS.patch_threshold))) or \
           path not in known_paths:
         # patch is almost as big as the file; don't bother patching
         # or a patch + rename cannot take place due to the target
@@ -1460,9 +1576,18 @@ class FileDifference(object):
     if len(self.renames) > 0:
       script.Print("Renaming files...")
       for src, tgt in self.renames.iteritems():
-        print "Renaming " + src + " to " + tgt.name
-        script.RenameFile(src, tgt.name)
-
+        #wschen 2014-04-29 if patched is using replace then del the original file and not to rename it
+        skip_rename = False
+        if self.verbatim_targets:
+          for i in self.verbatim_targets:
+            if i[0] == self.renames[src].name:
+              skip_rename = True
+        if skip_rename is False:
+          print "Renaming " + src + " to " + tgt.name
+          script.RenameFile(src, tgt.name)
+        else:
+          print self.renames[src].name + " is using replace and not to rename"
+          script.DeleteFiles(["/" + src])
 
 def WriteIncrementalOTAPackage(target_zip, source_zip, output_zip):
   target_has_recovery_patch = HasRecoveryPatch(target_zip)
@@ -1540,6 +1665,12 @@ def WriteIncrementalOTAPackage(target_zip, source_zip, output_zip):
   else:
     vendor_diff = None
 
+  if HasCustomPartition(target_zip):
+    custom_diff = FileDifference("custom", source_zip, target_zip, output_zip)
+    script.Mount("/custom")
+  else:
+    custom_diff = None
+
   target_fp = CalculateFingerprint(oem_props, oem_dict,
                                    OPTIONS.target_info_dict)
   source_fp = CalculateFingerprint(oem_props, oem_dict,
@@ -1606,13 +1737,17 @@ def WriteIncrementalOTAPackage(target_zip, source_zip, output_zip):
   #    (allow recovery to mark itself finished and reboot)
 
   if OPTIONS.two_step:
-    if not OPTIONS.source_info_dict.get("multistage_support", None):
+    if not OPTIONS.info_dict.get("multistage_support", None):
       assert False, "two-step packages not supported by this build"
-    fs = OPTIONS.source_info_dict["fstab"]["/misc"]
+    fs = OPTIONS.info_dict["fstab"]["/misc"]
     assert fs.fs_type.upper() == "EMMC", \
         "two-step packages only supported on devices with EMMC /misc partitions"
     bcb_dev = {"bcb_dev": fs.device}
     common.ZipWriteStr(output_zip, "recovery.img", target_recovery.data)
+    if OPTIONS.info_dict.get("mtk_header_support", None):
+      target_recovery_bthdr = common.GetBootableImage(
+          "/tmp/recovery_bthdr.img", "recovery_bthdr.img", OPTIONS.target_tmp, "RECOVERY")
+      common.ZipWriteStr(output_zip, "recovery_bthdr.img", target_recovery_bthdr.data)
     script.AppendExtra("""
 if get_stage("%(bcb_dev)s") == "2/3" then
 """ % bcb_dev)
@@ -1636,6 +1771,8 @@ else if get_stage("%(bcb_dev)s") != "3/3" then
   so_far = system_diff.EmitVerification(script)
   if vendor_diff:
     so_far += vendor_diff.EmitVerification(script)
+  if custom_diff:
+    so_far += custom_diff.EmitVerification(script)
 
   size = []
   if system_diff.patch_list:
@@ -1643,6 +1780,9 @@ else if get_stage("%(bcb_dev)s") != "3/3" then
   if vendor_diff:
     if vendor_diff.patch_list:
       size.append(vendor_diff.largest_source_size)
+  if custom_diff:
+    if custom_diff.patch_list:
+      size.append(custom_diff.largest_source_size)
 
   if updating_boot:
     d = common.Difference(target_boot, source_boot)
@@ -1652,8 +1792,7 @@ else if get_stage("%(bcb_dev)s") != "3/3" then
 
     common.ZipWriteStr(output_zip, "patch/boot.img.p", d)
 
-    boot_type, boot_device = common.GetTypeAndDevice(
-        "/boot", OPTIONS.source_info_dict)
+    boot_type, boot_device = common.GetTypeAndDevice("/boot", OPTIONS.info_dict)
 
     script.PatchCheck("%s:%s:%d:%s:%d:%s" %
                       (boot_type, boot_device,
@@ -1688,11 +1827,15 @@ else
   system_diff.RemoveUnneededFiles(script, ("/system/recovery.img",))
   if vendor_diff:
     vendor_diff.RemoveUnneededFiles(script)
+  if custom_diff:
+    custom_diff.RemoveUnneededFiles(script)
 
   script.ShowProgress(0.8, 0)
   total_patch_size = 1.0 + system_diff.TotalPatchSize()
   if vendor_diff:
     total_patch_size += vendor_diff.TotalPatchSize()
+  if custom_diff:
+    total_patch_size += custom_diff.TotalPatchSize()
   if updating_boot:
     total_patch_size += target_boot.size
 
@@ -1701,6 +1844,9 @@ else
   if vendor_diff:
     script.Print("Patching vendor files...")
     so_far = vendor_diff.EmitPatches(script, total_patch_size, so_far)
+  if custom_diff:
+    script.Print("Patching custom files...")
+    so_far = custom_diff.EmitPatches(script, total_patch_size, so_far)
 
   if not OPTIONS.two_step:
     if updating_boot:
@@ -1724,6 +1870,8 @@ else
   system_items = ItemSet("system", "META/filesystem_config.txt")
   if vendor_diff:
     vendor_items = ItemSet("vendor", "META/vendor_filesystem_config.txt")
+  if custom_diff:
+    custom_items = ItemSet("custom", "META/custom_filesystem_config.txt")
 
   if updating_recovery:
     # Recovery is generated as a patch using both the boot image
@@ -1754,6 +1902,8 @@ else
   target_symlinks = CopyPartitionFiles(system_items, target_zip, None)
   if vendor_diff:
     target_symlinks.extend(CopyPartitionFiles(vendor_items, target_zip, None))
+  if custom_diff:
+    target_symlinks.extend(CopyPartitionFiles(custom_items, target_zip, None))
 
   temp_script = script.MakeTemporary()
   system_items.GetMetadata(target_zip)
@@ -1761,12 +1911,17 @@ else
   if vendor_diff:
     vendor_items.GetMetadata(target_zip)
     vendor_items.Get("vendor").SetPermissions(temp_script)
+  if custom_diff:
+    custom_items.GetMetadata(target_zip)
+    custom_items.Get("custom").SetPermissions(temp_script)
 
   # Note that this call will mess up the trees of Items, so make sure
   # we're done with them.
   source_symlinks = CopyPartitionFiles(system_items, source_zip, None)
   if vendor_diff:
     source_symlinks.extend(CopyPartitionFiles(vendor_items, source_zip, None))
+  if custom_diff:
+    source_symlinks.extend(CopyPartitionFiles(custom_items, source_zip, None))
 
   target_symlinks_d = dict([(i[1], i[0]) for i in target_symlinks])
   source_symlinks_d = dict([(i[1], i[0]) for i in source_symlinks])
@@ -1811,6 +1966,9 @@ else
   if vendor_diff and vendor_diff.verbatim_targets:
     script.Print("Unpacking new vendor files...")
     script.UnpackPackageDir("vendor", "/vendor")
+  if custom_diff and custom_diff.verbatim_targets:
+    script.Print("Unpacking new custom files...")
+    script.UnpackPackageDir("custom", "/custom")
 
   if updating_recovery and not target_has_recovery_patch:
     script.Print("Unpacking new recovery...")
@@ -1819,6 +1977,8 @@ else
   system_diff.EmitRenames(script)
   if vendor_diff:
     vendor_diff.EmitRenames(script)
+  if custom_diff:
+    custom_diff.EmitRenames(script)
 
   script.Print("Symlinks and permissions...")
 
@@ -1925,6 +2085,8 @@ def main(argv):
                          "integers are allowed." % (a, o))
     elif o in ("-2", "--two_step"):
       OPTIONS.two_step = True
+    elif o in ("-g", "--ubifs"):
+      OPTIONS.ubifs = True
     elif o == "--no_signing":
       OPTIONS.no_signing = True
     elif o == "--verify":
@@ -1954,7 +2116,7 @@ def main(argv):
     return True
 
   args = common.ParseOptions(argv, __doc__,
-                             extra_opts="b:k:i:d:wne:t:a:2o:",
+                             extra_opts="b:k:i:d:wgne:t:a:2o:",
                              extra_long_opts=[
                                  "board_config=",
                                  "package_key=",
@@ -1962,6 +2124,7 @@ def main(argv):
                                  "full_radio",
                                  "full_bootloader",
                                  "wipe_user_data",
+                                 "ubifs",
                                  "no_prereq",
                                  "downgrade",
                                  "extra_script=",

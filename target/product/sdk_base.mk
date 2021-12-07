@@ -1,4 +1,9 @@
 #
+# Copyright (C) 2014 MediaTek Inc.
+# Modification based on code covered by the mentioned copyright
+# and/or permission notice(s).
+#
+#
 # Copyright (C) 2007 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,6 +21,14 @@
 
 PRODUCT_PROPERTY_OVERRIDES :=
 
+PRODUCT_PACKAGES :=
+
+PRODUCT_PACKAGE_OVERLAYS :=
+
+PRODUCT_COPY_FILES :=
+
+ifneq ($(strip $(BUILD_MTK_SDK)), sdk)
+
 PRODUCT_PACKAGES := \
 	ApiDemos \
 	CubeLiveWallpapers \
@@ -29,13 +42,9 @@ PRODUCT_PACKAGES := \
 	Launcher3 \
 	LegacyCamera \
 	librs_jni \
-	libwnndict \
-	libWnnEngDic \
-	libWnnJpnDic \
 	LiveWallpapersPicker \
 	Mms \
 	Music \
-	OpenWnn \
 	Protips \
 	rild \
 	SdkSetup \
@@ -46,7 +55,10 @@ PRODUCT_PACKAGES := \
 	SystemUI \
 	EasterEgg \
 	WidgetPreview
-
+#	libwnndict \
+#	libWnnEngDic \
+#	libWnnJpnDic \
+#	OpenWnn \
 # Define the host tools and libs that are parts of the SDK.
 -include sdk/build/product_sdk.mk
 -include development/build/product_sdk.mk
@@ -99,6 +111,8 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/core.mk)
 -include external/svox/pico/lang/PicoLangEsEsInSystem.mk
 -include external/svox/pico/lang/PicoLangFrFrInSystem.mk
 -include external/svox/pico/lang/PicoLangItItInSystem.mk
+
+endif
 
 # locale. en_US is both first and in alphabetical order to
 # ensure this is the default locale.

@@ -1,4 +1,9 @@
 #
+# Copyright (C) 2014 MediaTek Inc.
+# Modification based on code covered by the mentioned copyright
+# and/or permission notice(s).
+#
+#
 # Copyright (C) 2008 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -436,6 +441,12 @@ framework_res_package_export_deps := $(framework_res_package_export)
 else # LOCAL_SDK_RES_VERSION
 framework_res_package_export := \
     $(call intermediates-dir-for,APPS,framework-res,,COMMON)/package-export.apk
+
+  # FIXME: Cannot set in Android.mk due to base_rules.mk
+  ifneq ($(LOCAL_PACKAGE_NAME),mediatek-res)
+    LOCAL_RES_LIBRARIES += mediatek-res
+  endif
+
 # We can't depend directly on the export.apk file; it won't get its
 # PRIVATE_ vars set up correctly if we do.  Instead, depend on the
 # corresponding R.stamp file, which lists the export.apk as a dependency.

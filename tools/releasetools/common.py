@@ -247,7 +247,11 @@ def LoadInfoDict(input_file, input_dir=None):
 
   def makeint(key):
     if key in d:
-      d[key] = int(d[key], 0)
+      if d[key].endswith('M'):
+        d[key] = d[key].split("M")[0]
+        d[key] = int(d[key], 0) * 1024 * 1024
+      else:
+        d[key] = int(d[key], 0)
 
   makeint("recovery_api_version")
   makeint("blocksize")
@@ -258,6 +262,8 @@ def LoadInfoDict(input_file, input_dir=None):
   makeint("recovery_size")
   makeint("boot_size")
   makeint("fstab_version")
+  #wschen 2012-11-07
+  makeint("custom_size")
 
   system_root_image = d.get("system_root_image", None) == "true"
   if d.get("no_recovery", None) != "true":
@@ -399,6 +405,23 @@ def DumpInfoDict(d):
   for k, v in sorted(d.items()):
     print "%-25s = (%s) %s" % (k, type(v).__name__, v)
 
+def make_ramdisk(fs_config_file, sourcedir):
+  ramdisk_img = tempfile.NamedTemporaryFile()
+
+  if os.access(fs_config_file, os.F_OK):
+    cmd = ["mkbootfs", "-f", fs_config_file,
+           os.path.join(sourcedir, "RAMDISK")]
+  else:
+    cmd = ["mkbootfs", os.path.join(sourcedir, "RAMDISK")]
+  p1 = Run(cmd, stdout=subprocess.PIPE)
+  p2 = Run(["minigzip"], stdin=p1.stdout, stdout=ramdisk_img.file.fileno())
+
+  p2.wait()
+  p1.wait()
+  assert p1.returncode == 0, "mkbootfs of %s ramdisk failed" % (sourcedir,)
+  assert p2.returncode == 0, "minigzip of %s ramdisk failed" % (sourcedir,)
+
+  return ramdisk_img
 
 def _BuildBootableImage(sourcedir, fs_config_file, info_dict=None,
                         has_ramdisk=False):
@@ -408,24 +431,6 @@ def _BuildBootableImage(sourcedir, fs_config_file, info_dict=None,
   'sourcedir'), and turn them into a boot image.  Return the image data, or
   None if sourcedir does not appear to contains files for building the
   requested image."""
-
-  def make_ramdisk():
-    ramdisk_img = tempfile.NamedTemporaryFile()
-
-    if os.access(fs_config_file, os.F_OK):
-      cmd = ["mkbootfs", "-f", fs_config_file,
-             os.path.join(sourcedir, "RAMDISK")]
-    else:
-      cmd = ["mkbootfs", os.path.join(sourcedir, "RAMDISK")]
-    p1 = Run(cmd, stdout=subprocess.PIPE)
-    p2 = Run(["minigzip"], stdin=p1.stdout, stdout=ramdisk_img.file.fileno())
-
-    p2.wait()
-    p1.wait()
-    assert p1.returncode == 0, "mkbootfs of %s ramdisk failed" % (sourcedir,)
-    assert p2.returncode == 0, "minigzip of %s ramdisk failed" % (sourcedir,)
-
-    return ramdisk_img
 
   if not os.access(os.path.join(sourcedir, "kernel"), os.F_OK):
     return None
@@ -439,7 +444,7 @@ def _BuildBootableImage(sourcedir, fs_config_file, info_dict=None,
   img = tempfile.NamedTemporaryFile()
 
   if has_ramdisk:
-    ramdisk_img = make_ramdisk()
+    ramdisk_img = make_ramdisk(fs_config_file, sourcedir)
 
   # use MKBOOTIMG from environ, or "mkbootimg" if empty or not set
   mkbootimg = os.getenv('MKBOOTIMG') or "mkbootimg"
@@ -466,6 +471,30 @@ def _BuildBootableImage(sourcedir, fs_config_file, info_dict=None,
     cmd.append("--pagesize")
     cmd.append(open(fn).read().rstrip("\n"))
 
+  #wschen 2014-04-17
+  fn = os.path.join(sourcedir, "ramdisk_offset")
+  if os.access(fn, os.F_OK):
+    cmd.append("--ramdisk_offset")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2014-04-17
+  fn = os.path.join(sourcedir, "kernel_offset")
+  if os.access(fn, os.F_OK):
+    cmd.append("--kernel_offset")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2014-04-17
+  fn = os.path.join(sourcedir, "tags_offset")
+  if os.access(fn, os.F_OK):
+    cmd.append("--tags_offset")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2013-06-06 for firmware version in bootimage header and limit max length to 15 bytes
+  fn = os.path.join(sourcedir, "board")
+  if os.access(fn, os.F_OK):
+    cmd.append("--board")
+    cmd.append(open(fn).read().rstrip("\n")[:15])
+
   args = info_dict.get("mkbootimg_args", None)
   if args and args.strip():
     cmd.extend(shlex.split(args))
@@ -476,6 +505,138 @@ def _BuildBootableImage(sourcedir, fs_config_file, info_dict=None,
 
   if has_ramdisk:
     cmd.extend(["--ramdisk", ramdisk_img.name])
+
+  img_unsigned = None
+  if info_dict.get("vboot", None):
+    img_unsigned = tempfile.NamedTemporaryFile()
+    cmd.extend(["--output", img_unsigned.name])
+  else:
+    cmd.extend(["--output", img.name])
+
+  p = Run(cmd, stdout=subprocess.PIPE)
+  p.communicate()
+  assert p.returncode == 0, "mkbootimg of %s image failed" % (
+      os.path.basename(sourcedir),)
+
+  if (info_dict.get("boot_signer", None) == "true" and
+      info_dict.get("verity_key", None)):
+    path = "/" + os.path.basename(sourcedir).lower()
+    cmd = [OPTIONS.boot_signer_path]
+    cmd.extend(OPTIONS.boot_signer_args)
+    cmd.extend([path, img.name,
+                info_dict["verity_key"] + ".pk8",
+                info_dict["verity_key"] + ".x509.pem", img.name])
+    p = Run(cmd, stdout=subprocess.PIPE)
+    p.communicate()
+    assert p.returncode == 0, "boot_signer of %s image failed" % path
+
+  # Sign the image if vboot is non-empty.
+  elif info_dict.get("vboot", None):
+    path = "/" + os.path.basename(sourcedir).lower()
+    img_keyblock = tempfile.NamedTemporaryFile()
+    cmd = [info_dict["vboot_signer_cmd"], info_dict["futility"],
+           img_unsigned.name, info_dict["vboot_key"] + ".vbpubk",
+           info_dict["vboot_key"] + ".vbprivk",
+           info_dict["vboot_subkey"] + ".vbprivk",
+           img_keyblock.name,
+           img.name]
+    p = Run(cmd, stdout=subprocess.PIPE)
+    p.communicate()
+    assert p.returncode == 0, "vboot_signer of %s image failed" % path
+
+    # Clean up the temp files.
+    img_unsigned.close()
+    img_keyblock.close()
+
+  img.seek(os.SEEK_SET, 0)
+  data = img.read()
+
+  if has_ramdisk:
+    ramdisk_img.close()
+  img.close()
+
+  return data
+
+def BuildBootableBTHDRImage(sourcedir, fs_config_file, info_dict=None,
+                           has_ramdisk=False):
+  """Take a kernel, cmdline, and ramdisk directory from the input (in
+  'sourcedir'), and turn them into a boot image.  Return the image
+  data, or None if sourcedir does not appear to contains files for
+  building the requested image."""
+
+  if not os.access(os.path.join(sourcedir, "kernel"), os.F_OK):
+    return None
+
+  if has_ramdisk and not os.access(os.path.join(sourcedir, "RAMDISK"), os.F_OK):
+    return None
+
+  if info_dict is None:
+    info_dict = OPTIONS.info_dict
+
+  img = tempfile.NamedTemporaryFile()
+
+  if has_ramdisk:
+    ramdisk_img = make_ramdisk(fs_config_file, sourcedir)
+
+  # use MKBOOTIMG from environ, or "mkbootimg" if empty or not set
+  mkbootimg = os.getenv('MKBOOTIMG') or "mkbootimg"
+
+  cmd = [mkbootimg, "--kernel", os.path.join(sourcedir, "kernel")]
+
+  fn = os.path.join(sourcedir, "second")
+  if os.access(fn, os.F_OK):
+    cmd.append("--second")
+    cmd.append(fn)
+
+  fn = os.path.join(sourcedir, "cmdline")
+  if os.access(fn, os.F_OK):
+    cmd.append("--cmdline")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  fn = os.path.join(sourcedir, "base")
+  if os.access(fn, os.F_OK):
+    cmd.append("--base")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  fn = os.path.join(sourcedir, "pagesize")
+  if os.access(fn, os.F_OK):
+    cmd.append("--pagesize")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2014-04-17
+  fn = os.path.join(sourcedir, "ramdisk_offset")
+  if os.access(fn, os.F_OK):
+    cmd.append("--ramdisk_offset")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2014-04-17
+  fn = os.path.join(sourcedir, "kernel_offset")
+  if os.access(fn, os.F_OK):
+    cmd.append("--kernel_offset")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2014-04-17
+  fn = os.path.join(sourcedir, "tags_offset")
+  if os.access(fn, os.F_OK):
+    cmd.append("--tags_offset")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2013-06-06 for firmware version in bootimage header and limit max length to 15 bytes
+  fn = os.path.join(sourcedir, "board")
+  if os.access(fn, os.F_OK):
+    cmd.append("--board")
+    cmd.append(open(fn).read().rstrip("\n")[:15])
+
+  args = info_dict.get("mkbootimg_args", None)
+  if args and args.strip():
+    cmd.extend(shlex.split(args))
+
+  args = info_dict.get("mkbootimg_version_args", None)
+  if args and args.strip():
+    cmd.extend(shlex.split(args))
+
+  if has_ramdisk:
+    cmd.extend(["--ramdisk", os.path.join(sourcedir, "ramdisk-bthdr")])
 
   img_unsigned = None
   if info_dict.get("vboot", None):
@@ -560,9 +721,14 @@ def GetBootableImage(name, prebuilt_name, unpack_dir, tree_subdir,
                  info_dict.get("recovery_as_boot") == "true")
 
   fs_config = "META/" + tree_subdir.lower() + "_filesystem_config.txt"
-  data = _BuildBootableImage(os.path.join(unpack_dir, tree_subdir),
-                             os.path.join(unpack_dir, fs_config),
-                             info_dict, has_ramdisk)
+  if prebuilt_name == "recovery_bthdr.img":
+    data = BuildBootableBTHDRImage(os.path.join(unpack_dir, tree_subdir),
+                                   os.path.join(unpack_dir, fs_config),
+                                   info_dict, has_ramdisk)
+  else:
+    data = _BuildBootableImage(os.path.join(unpack_dir, tree_subdir),
+                               os.path.join(unpack_dir, fs_config),
+                               info_dict, has_ramdisk)
   if data:
     return File(name, data)
   return None
@@ -1331,8 +1497,12 @@ def ComputeDifferences(diffs):
         if patch is None:
           print "patching failed!                                  %s" % (name,)
         else:
-          print "%8.2f sec %8d / %8d bytes (%6.2f%%) %s" % (
-              dur, len(patch), tf.size, 100.0 * len(patch) / tf.size, name)
+          if tf.size != 0:
+            print "%8.2f sec %8d / %8d bytes (%6.2f%%) %s" % (
+                dur, len(patch), tf.size, 100.0 * len(patch) / tf.size, name)
+          else:
+            print "%8.2f sec %8d / %8d bytes (%6.2f%%) %s" % (
+                dur, len(patch), tf.size, 100, name)
       lock.release()
     except Exception as e:
       print e
@@ -1591,7 +1761,8 @@ PARTITION_TYPES = {
     "ext4": "EMMC",
     "emmc": "EMMC",
     "f2fs": "EMMC",
-    "squashfs": "EMMC"
+    "squashfs": "EMMC",
+    "ubifs": "MTD"
 }
 
 def GetTypeAndDevice(mount_point, info):
