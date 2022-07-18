@@ -36,6 +36,11 @@ ifneq ($(LOCAL_SDK_VERSION),)
 else
   ifneq ($(LOCAL_NO_STANDARD_LIBRARIES),true)
     LOCAL_JAVA_LIBRARIES := $(TARGET_DEFAULT_JAVA_LIBRARIES) $(LOCAL_JAVA_LIBRARIES)
+ifneq ($(TARGET_BUILD_PDK),true)
+#ifneq ($(filter mediatek-common,$(ALL_MODULES)),)
+    LOCAL_JAVA_LIBRARIES := mediatek-common $(LOCAL_JAVA_LIBRARIES)
+#endif
+endif
   endif
 endif
 
@@ -113,6 +118,48 @@ full_classes_jar := $(intermediates.COMMON)/classes.jar
 built_dex := $(intermediates.COMMON)/classes.dex
 endif
 
+#Set default value
+classes_compiled_jar_placeholder := ${full_classes_emma_jar}
+
+ifeq (true , $(ASPECTS_ORIENTED_INSTRUMENT))
+  
+  #Clear the variable for each module
+  LOCAL_ASPECTS_SRC_FILES := 
+
+  #Make sure the aspects dir of the current module is specified before doing anything
+  ifneq (,$(LOCAL_ASPECTS_DIR))
+
+      $(info AOP: [Check Aspects Folder] LOCAL_MODULE = $(LOCAL_MODULE), LOCAL_PATH = $(LOCAL_PATH), LOCAL_ASPECTS_DIR = $(LOCAL_ASPECTS_DIR))
+
+      # Quit if the folder does not exist
+      ifeq (,$(wildcard  $(LOCAL_PATH)/$(LOCAL_ASPECTS_DIR)))
+          $(error Aspect folder: $(LOCAL_PATH)/$(LOCAL_ASPECTS_DIR) does not exist)
+      endif 
+
+      aop_classes_compiled_jar_leaf := classes-aop.jar
+
+      aop_compiled_jar := $(intermediates.COMMON)/$(aop_classes_compiled_jar_leaf)
+
+      #Save the dir for later use
+      #PRIVATE_ASPECTS_DIR := $(LOCAL_ASPECTS_DIR)
+
+      # Get list of all aspect file path
+      LOCAL_ASPECTS_SRC_FILES := $(patsubst ./%,%, \
+          $(shell cd $(LOCAL_PATH)/$(LOCAL_ASPECTS_DIR) ; \
+          find $(1) -name "*.aj" -and -not -name ".*") \
+      )
+
+      ifneq (,$(LOCAL_ASPECTS_SRC_FILES))
+         #$(info AOP: [Check Aspects] LOCAL_MODULE = $(LOCAL_MODULE), Aspects exist: $(LOCAL_ASPECTS_SRC_FILES))
+         classes_compiled_jar_placeholder := ${aop_compiled_jar}
+      else
+         #$(info AOP: [Check Aspects] LOCAL_MODULE = $(LOCAL_MODULE), Aspects do not exist: $(LOCAL_ASPECTS_SRC_FILES))
+         classes_compiled_jar_placeholder := ${full_classes_emma_jar}
+      endif
+  endif
+
+endif
+
 LOCAL_INTERMEDIATE_TARGETS += \
     $(full_classes_compiled_jar) \
     $(full_classes_jarjar_jar) \
@@ -123,6 +170,11 @@ LOCAL_INTERMEDIATE_TARGETS += \
     $(built_dex) \
     $(full_classes_stubs_jar)
 
+ifeq (true,$(ASPECTS_ORIENTED_INSTRUMENT))
+ifneq (,$(LOCAL_ASPECTS_DIR))
+  LOCAL_INTERMEDIATE_TARGETS += $(aop_compiled_jar)
+endif 
+endif
 
 LOCAL_INTERMEDIATE_SOURCE_DIR := $(intermediates.COMMON)/src
 
@@ -334,6 +386,14 @@ endif
 # This intentionally depends on java_sources, not all_java_sources.
 # Deps for generated source files must be handled separately,
 # via deps on the target that generates the sources.
+# Mediatek: code injection
+ifneq ($(strip $(MTK_PLATFORM)),)
+  ifeq ($(LOCAL_JAVASSIST_ENABLED), true)
+  $(full_classes_compiled_jar): $(HOST_OUT_JAVA_LIBRARIES)/jpe_tool.jar
+  endif
+  $(full_classes_compiled_jar): PRIVATE_JAVASSIST_ENABLED := $(LOCAL_JAVASSIST_ENABLED)
+  $(full_classes_compiled_jar): PRIVATE_JAVASSIST_OPTIONS := $(LOCAL_JAVASSIST_OPTIONS)
+endif
 $(full_classes_compiled_jar): PRIVATE_JAVACFLAGS := $(LOCAL_JAVACFLAGS)
 $(full_classes_compiled_jar): PRIVATE_JAR_EXCLUDE_FILES := $(LOCAL_JAR_EXCLUDE_FILES)
 $(full_classes_compiled_jar): PRIVATE_JAR_PACKAGES := $(LOCAL_JAR_PACKAGES)
@@ -343,9 +403,25 @@ $(full_classes_compiled_jar): PRIVATE_DONT_DELETE_JAR_META_INF := $(LOCAL_DONT_D
 $(full_classes_compiled_jar): $(java_sources) $(java_resource_sources) $(full_java_lib_deps) \
         $(jar_manifest_file) $(layers_file) $(RenderScript_file_stamp) \
         $(proto_java_sources_file_stamp) $(LOCAL_ADDITIONAL_DEPENDENCIES)
+	@echo [Compiling] PRIVATE_MODULE = [$(PRIVATE_MODULE)], PRIVATE_PATH = [$(PRIVATE_PATH)]
 	$(transform-java-to-classes.jar)
 
 $(full_classes_compiled_jar): PRIVATE_JAVAC_DEBUG_FLAGS := -g
+
+# AOP weaving is triggered by the change of either full_classes_compiled_jar or aspect files
+ifeq (true,$(ASPECTS_ORIENTED_INSTRUMENT))
+ifneq (,$(LOCAL_ASPECTS_DIR))
+
+$(aop_compiled_jar): PRIVATE_ASPECTS_DIR := $(LOCAL_ASPECTS_DIR)
+$(aop_compiled_jar): $(full_classes_emma_jar) \
+	$(addprefix $(LOCAL_PATH)/$(LOCAL_ASPECTS_DIR)/,$(LOCAL_ASPECTS_SRC_FILES))
+	#@echo AOP: [Start Weaving] Target = [$@]
+	#@echo AOP: [Start Weaving] Pre    = [$^]
+	#@echo AOP: [Start Weaving] PRIVATE_MODULE = [$(PRIVATE_MODULE)], PRIVATE_PATH = [$(PRIVATE_PATH)]
+	$(aop-weave-classes.jar)
+
+  endif
+endif	
 
 # Run jarjar if necessary, otherwise just copy the file.
 ifneq ($(strip $(LOCAL_JARJAR_RULES)),)
@@ -355,7 +431,7 @@ $(full_classes_jarjar_jar): $(full_classes_compiled_jar) $(LOCAL_JARJAR_RULES) |
 	$(hide) java -jar $(JARJAR) process $(PRIVATE_JARJAR_RULES) $< $@
 else
 $(full_classes_jarjar_jar): $(full_classes_compiled_jar) | $(ACP)
-	@echo Copying: $@
+	@echo Copying: [$<] to [$@]
 	$(hide) $(ACP) -fp $< $@
 endif
 
@@ -383,7 +459,7 @@ $(full_classes_emma_jar): $(full_classes_jarjar_jar) | $(ACP)
 endif
 
 # Keep a copy of the jar just before proguard processing.
-$(full_classes_jar): $(full_classes_emma_jar) | $(ACP)
+$(full_classes_jar): $(classes_compiled_jar_placeholder) | $(ACP)
 	@echo Copying: $@
 	$(hide) $(ACP) -fp $< $@
 
@@ -410,7 +486,7 @@ ifeq ($(filter shrinktests,$(LOCAL_PROGUARD_ENABLED)),)
 proguard_flags += -dontshrink # don't shrink tests by default
 endif # shrinktests
 endif # test package
-ifeq ($(filter obfuscation,$(LOCAL_PROGUARD_ENABLED)),)
+ifeq ($(filter obfuscation custom,$(LOCAL_PROGUARD_ENABLED)),)
 # By default no obfuscation
 proguard_flags += -dontobfuscate
 endif  # No obfuscation
@@ -420,7 +496,7 @@ proguard_flags += -dontoptimize
 endif  # No optimization
 
 ifdef LOCAL_INSTRUMENTATION_FOR
-ifeq ($(filter obfuscation,$(LOCAL_PROGUARD_ENABLED)),)
+ifeq ($(filter obfuscation custom,$(LOCAL_PROGUARD_ENABLED)),)
 # If no obfuscation, link in the instrmented package's classes.jar as a library.
 # link_instr_classes_jar is defined in base_rule.mk
 proguard_flags += -libraryjars $(link_instr_classes_jar)
@@ -430,10 +506,12 @@ else # obfuscation
 # and treat the main app's class.jar as injars instead of libraryjars.
 proguard_flags := -injars  $(link_instr_classes_jar) \
     -outjars $(intermediates.COMMON)/proguard.$(LOCAL_INSTRUMENTATION_FOR).jar \
-    -include $(link_instr_intermediates_dir.COMMON)/proguard_options \
     -applymapping $(link_instr_intermediates_dir.COMMON)/proguard_dictionary \
     -verbose \
     $(proguard_flags)
+
+#   Removed proguard_options due to not generated
+#   -include $(link_instr_intermediates_dir.COMMON)/proguard_options 
 
 # Sometimes (test + main app) uses different keep rules from the main app -
 # apply the main app's dictionary anyway.
@@ -456,6 +534,7 @@ extra_input_jar :=
 endif
 $(full_classes_proguard_jar): PRIVATE_EXTRA_INPUT_JAR := $(extra_input_jar)
 $(full_classes_proguard_jar): PRIVATE_PROGUARD_FLAGS := $(proguard_flags) $(LOCAL_PROGUARD_FLAGS)
+$(full_classes_proguard_jar):  PRIVATE_INSTRUMENTATION_FOR:=$(strip $(LOCAL_INSTRUMENTATION_FOR))
 $(full_classes_proguard_jar) : $(full_classes_jar) $(extra_input_jar) $(proguard_flag_files) | $(ACP) $(PROGUARD)
 	$(call transform-jar-to-proguard)
 
@@ -465,6 +544,40 @@ $(full_classes_proguard_jar) : $(full_classes_jar)
 	$(hide) $(ACP) -fp $< $@
 
 endif # LOCAL_PROGUARD_ENABLED defined
+
+# Mediatek: ProGuard for Classes and Partial Class Proguard
+ifeq ($(LOCAL_PROGUARD_ENABLED),custom)
+ifeq ($(LOCAL_PROGUARD_SOURCE),javaclassfile)
+    $(full_classes_compiled_jar): PRIVATE_CLASS_PROGUARD_FLAGS := $(proguard_flags) $(LOCAL_PROGUARD_FLAGS)
+ifeq ($(LOCAL_EXCLUDED_JAVA_CLASSES),)											 
+    #class proguard enabled
+    $(full_classes_compiled_jar): PRIVATE_PROGUARD_SOURCE := $(LOCAL_PROGUARD_SOURCE)
+    #partial class proguard enabled
+    $(full_classes_compiled_jar): PRIVATE_EXCLUDED_JAVA_CLASSES := 
+else
+    $(full_classes_compiled_jar): PRIVATE_PROGUARD_SOURCE :=
+    $(full_classes_compiled_jar): PRIVATE_EXCLUDED_JAVA_CLASSES := $(strip $(LOCAL_EXCLUDED_JAVA_CLASSES)) 
+endif
+else 
+    $(full_classes_compiled_jar): PRIVATE_CLASS_PROGUARD_FLAGS := 
+    $(full_classes_compiled_jar): PRIVATE_PROGUARD_SOURCE := 
+    $(full_classes_compiled_jar): PRIVATE_EXCLUDED_JAVA_CLASSES:=
+endif
+else
+    $(full_classes_compiled_jar): PRIVATE_CLASS_PROGUARD_FLAGS := 
+    $(full_classes_compiled_jar): PRIVATE_PROGUARD_SOURCE := 
+    $(full_classes_compiled_jar): PRIVATE_EXCLUDED_JAVA_CLASSES:=
+endif
+
+ifeq ($(LOCAL_PROGUARD_ENABLED),custom)
+ifeq ($(LOCAL_PROGUARD_SOURCE),javaclassfile)
+    $(full_classes_proguard_jar): PRIVATE_PROGUARD_ENABLED :=
+else 
+    $(full_classes_proguard_jar): PRIVATE_PROGUARD_ENABLED := $(LOCAL_PROGUARD_ENABLED)
+endif
+else
+    $(full_classes_proguard_jar): PRIVATE_PROGUARD_ENABLED := $(LOCAL_PROGUARD_ENABLED)
+endif
 
 
 # Override PRIVATE_INTERMEDIATES_DIR so that install-dex-debug

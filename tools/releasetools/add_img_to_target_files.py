@@ -75,6 +75,14 @@ def AddSystem(output_zip, prefix="IMAGES/", recovery_img=None, boot_img=None):
   with open(block_list, "rb") as f:
     common.ZipWriteStr(output_zip, prefix + "system.map", f.read())
 
+  fs_type = OPTIONS.info_dict.get("fs_type", "")
+  if fs_type.startswith("ubifs"):
+    system_image_info_dict = OPTIONS.info_dict
+    system_image_info_dict["ubifs_fixup_flag"] = "-f"
+    imgname = BuildSystem(OPTIONS.input_tmp, system_image_info_dict,
+                        block_list=block_list)
+    with open(imgname, "rb") as f:
+      common.ZipWriteStr(output_zip, prefix + "android.fixup.img", f.read())
 
 def BuildSystem(input_dir, info_dict, block_list=None):
   """Build the (sparse) system image and return the name of a temp
@@ -99,11 +107,27 @@ def AddVendor(output_zip, prefix="IMAGES/"):
   with open(block_list, "rb") as f:
     common.ZipWriteStr(output_zip, prefix + "vendor.map", f.read())
 
+def AddCustom(output_zip, prefix="IMAGES/"):
+  """Turn the contents of CUSTOM into a custom image and store in it
+  output_zip."""
+  block_list = common.MakeTempFile(prefix="custom-blocklist-", suffix=".map")
+  imgname = BuildCustom(OPTIONS.input_tmp, OPTIONS.info_dict,
+                     block_list=block_list)
+  with open(imgname, "rb") as f:
+    common.ZipWriteStr(output_zip, prefix + "custom.img", f.read())
+  with open(block_list, "rb") as f:
+    common.ZipWriteStr(output_zip, prefix + "custom.map", f.read())
+
 
 def BuildVendor(input_dir, info_dict, block_list=None):
   """Build the (sparse) vendor image and return the name of a temp
   file containing it."""
   return CreateImage(input_dir, info_dict, "vendor", block_list=block_list)
+
+def BuildCustom(input_dir, info_dict, block_list=None):
+  """Build the (sparse) custom image and return the name of a temp
+  file containing it."""
+  return CreateImage(input_dir, info_dict, "custom", block_list=block_list)
 
 
 def CreateImage(input_dir, info_dict, what, block_list=None):
@@ -243,6 +267,13 @@ def AddImagesToTargetFiles(filename):
   except KeyError:
     has_vendor = False
 
+  try:
+    input_zip.getinfo("CUSTOM/")
+    has_custom = True
+  except KeyError:
+    has_custom = False
+
+
   OPTIONS.info_dict = common.LoadInfoDict(input_zip)
   if "selinux_fc" in OPTIONS.info_dict:
     OPTIONS.info_dict["selinux_fc"] = os.path.join(
@@ -283,11 +314,21 @@ def AddImagesToTargetFiles(filename):
     if recovery_image:
       recovery_image.AddToZip(output_zip)
 
+  if "mtk_header_support" in OPTIONS.info_dict:
+    banner("recovery_bthdr")
+    recovery_bthdr_image = common.GetBootableImage(
+        "IMAGES/recovery_bthdr.img", "recovery_bthdr.img", OPTIONS.input_tmp, "RECOVERY")
+    if recovery_bthdr_image:
+      recovery_bthdr_image.AddToZip(output_zip)
+
   banner("system")
   AddSystem(output_zip, recovery_img=recovery_image, boot_img=boot_image)
   if has_vendor:
     banner("vendor")
     AddVendor(output_zip)
+  if has_custom:
+    banner("custom")
+    AddCustom(output_zip)
   banner("userdata")
   AddUserdata(output_zip)
   banner("cache")

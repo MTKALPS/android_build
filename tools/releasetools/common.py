@@ -61,8 +61,10 @@ OPTIONS.tempfiles = []
 OPTIONS.device_specific = None
 OPTIONS.extras = {}
 OPTIONS.info_dict = None
-
-
+#tony
+OPTIONS.tee = None
+OPTIONS.trustonic = None
+OPTIONS.mtk_sec_boot_sig_tail = True
 # Values for "certificate" in apkcerts that mean special things.
 SPECIAL_CERT_STRINGS = ("PRESIGNED", "EXTERNAL")
 
@@ -158,7 +160,11 @@ def LoadInfoDict(input):
 
   def makeint(key):
     if key in d:
-      d[key] = int(d[key], 0)
+      if d[key].endswith('M'):
+        d[key] = d[key].split("M")[0]
+        d[key] = int(d[key], 0) * 1024 * 1024
+      else:
+        d[key] = int(d[key], 0)
 
   makeint("recovery_api_version")
   makeint("blocksize")
@@ -169,6 +175,8 @@ def LoadInfoDict(input):
   makeint("recovery_size")
   makeint("boot_size")
   makeint("fstab_version")
+  #wschen 2012-11-07 
+  makeint("custom_size")
 
   d["fstab"] = LoadRecoveryFSTab(read_helper, d["fstab_version"])
   d["build.prop"] = LoadBuildProp(read_helper)
@@ -333,11 +341,146 @@ def BuildBootableImage(sourcedir, fs_config_file, info_dict=None):
     cmd.append("--pagesize")
     cmd.append(open(fn).read().rstrip("\n"))
 
+  #wschen 2014-04-17 
+  fn = os.path.join(sourcedir, "ramdisk_offset")
+  if os.access(fn, os.F_OK):
+    cmd.append("--ramdisk_offset")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2014-04-17 
+  fn = os.path.join(sourcedir, "kernel_offset")
+  if os.access(fn, os.F_OK):
+    cmd.append("--kernel_offset")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2014-04-17 
+  fn = os.path.join(sourcedir, "tags_offset")
+  if os.access(fn, os.F_OK):
+    cmd.append("--tags_offset")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2013-06-06 for firmware version in bootimage header and limit max length to 15 bytes
+  fn = os.path.join(sourcedir, "board")
+  if os.access(fn, os.F_OK):
+    cmd.append("--board")
+    cmd.append(open(fn).read().rstrip("\n")[:15])
+
   args = info_dict.get("mkbootimg_args", None)
   if args and args.strip():
     cmd.extend(shlex.split(args))
 
-  cmd.extend(["--ramdisk", ramdisk_img.name,
+#  cmd.extend(["--ramdisk", ramdisk_img.name,
+#              "--output", img.name])
+
+  cmd.extend(["--ramdisk", os.path.join(sourcedir, "ramdisk"),
+              "--output", img.name])
+
+  p = Run(cmd, stdout=subprocess.PIPE)
+  p.communicate()
+  assert p.returncode == 0, "mkbootimg of %s image failed" % (
+      os.path.basename(sourcedir),)
+
+  if info_dict.get("verity_key", None):
+    path = "/" + os.path.basename(sourcedir).lower()
+    cmd = ["boot_signer", path, img.name, info_dict["verity_key"], img.name]
+    p = Run(cmd, stdout=subprocess.PIPE)
+    p.communicate()
+    assert p.returncode == 0, "boot_signer of %s image failed" % path
+
+  img.seek(os.SEEK_SET, 0)
+  data = img.read()
+
+  ramdisk_img.close()
+  img.close()
+
+  return data
+
+def BuildBootableBTHDRImage(sourcedir, fs_config_file, info_dict=None):
+  """Take a kernel, cmdline, and ramdisk directory from the input (in
+  'sourcedir'), and turn them into a boot image.  Return the image
+  data, or None if sourcedir does not appear to contains files for
+  building the requested image."""
+
+  if (not os.access(os.path.join(sourcedir, "RAMDISK"), os.F_OK) or
+      not os.access(os.path.join(sourcedir, "kernel"), os.F_OK)):
+    return None
+
+  if info_dict is None:
+    info_dict = OPTIONS.info_dict
+
+  ramdisk_img = tempfile.NamedTemporaryFile()
+  img = tempfile.NamedTemporaryFile()
+
+  if os.access(fs_config_file, os.F_OK):
+    cmd = ["mkbootfs", "-f", fs_config_file, os.path.join(sourcedir, "RAMDISK")]
+  else:
+    cmd = ["mkbootfs", os.path.join(sourcedir, "RAMDISK")]
+  p1 = Run(cmd, stdout=subprocess.PIPE)
+  p2 = Run(["minigzip"],
+           stdin=p1.stdout, stdout=ramdisk_img.file.fileno())
+
+  p2.wait()
+  p1.wait()
+  assert p1.returncode == 0, "mkbootfs of %s ramdisk failed" % (targetname,)
+  assert p2.returncode == 0, "minigzip of %s ramdisk failed" % (targetname,)
+
+  # use MKBOOTIMG from environ, or "mkbootimg" if empty or not set
+  mkbootimg = os.getenv('MKBOOTIMG') or "mkbootimg"
+
+  cmd = [mkbootimg, "--kernel", os.path.join(sourcedir, "kernel")]
+
+  fn = os.path.join(sourcedir, "second")
+  if os.access(fn, os.F_OK):
+    cmd.append("--second")
+    cmd.append(fn)
+
+  fn = os.path.join(sourcedir, "cmdline")
+  if os.access(fn, os.F_OK):
+    cmd.append("--cmdline")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  fn = os.path.join(sourcedir, "base")
+  if os.access(fn, os.F_OK):
+    cmd.append("--base")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  fn = os.path.join(sourcedir, "pagesize")
+  if os.access(fn, os.F_OK):
+    cmd.append("--pagesize")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2014-04-17 
+  fn = os.path.join(sourcedir, "ramdisk_offset")
+  if os.access(fn, os.F_OK):
+    cmd.append("--ramdisk_offset")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2014-04-17 
+  fn = os.path.join(sourcedir, "kernel_offset")
+  if os.access(fn, os.F_OK):
+    cmd.append("--kernel_offset")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2014-04-17 
+  fn = os.path.join(sourcedir, "tags_offset")
+  if os.access(fn, os.F_OK):
+    cmd.append("--tags_offset")
+    cmd.append(open(fn).read().rstrip("\n"))
+
+  #wschen 2013-06-06 for firmware version in bootimage header and limit max length to 15 bytes
+  fn = os.path.join(sourcedir, "board")
+  if os.access(fn, os.F_OK):
+    cmd.append("--board")
+    cmd.append(open(fn).read().rstrip("\n")[:15])
+
+  args = info_dict.get("mkbootimg_args", None)
+  if args and args.strip():
+    cmd.extend(shlex.split(args))
+
+#  cmd.extend(["--ramdisk", ramdisk_img.name,
+#              "--output", img.name])
+
+  cmd.extend(["--ramdisk", os.path.join(sourcedir, "ramdisk-bthdr"),
               "--output", img.name])
 
   p = Run(cmd, stdout=subprocess.PIPE)
@@ -381,9 +524,14 @@ def GetBootableImage(name, prebuilt_name, unpack_dir, tree_subdir,
 
   print "building image from target_files %s..." % (tree_subdir,)
   fs_config = "META/" + tree_subdir.lower() + "_filesystem_config.txt"
-  data = BuildBootableImage(os.path.join(unpack_dir, tree_subdir),
-                            os.path.join(unpack_dir, fs_config),
-                            info_dict)
+  if prebuilt_name == "recovery_bthdr.img":
+    data = BuildBootableBTHDRImage(os.path.join(unpack_dir, tree_subdir),
+                                   os.path.join(unpack_dir, fs_config),
+                                   info_dict)
+  else:
+    data = BuildBootableImage(os.path.join(unpack_dir, tree_subdir),
+                              os.path.join(unpack_dir, fs_config),
+                              info_dict)
   if data:
     return File(name, data)
   return None
@@ -1007,8 +1155,12 @@ def ComputeDifferences(diffs):
         if patch is None:
           print "patching failed!                                  %s" % (name,)
         else:
-          print "%8.2f sec %8d / %8d bytes (%6.2f%%) %s" % (
-              dur, len(patch), tf.size, 100.0 * len(patch) / tf.size, name)
+          if tf.size != 0:
+            print "%8.2f sec %8d / %8d bytes (%6.2f%%) %s" % (
+                dur, len(patch), tf.size, 100.0 * len(patch) / tf.size, name)
+          else:
+            print "%8.2f sec %8d / %8d bytes (%6.2f%%) %s" % (
+                dur, len(patch), tf.size, 100, name)
       lock.release()
     except Exception, e:
       print e
@@ -1043,7 +1195,9 @@ class BlockDifference:
     self.path = os.path.join(tmpdir, partition)
     b.Compute(self.path)
 
-    _, self.device = GetTypeAndDevice("/" + partition, OPTIONS.info_dict)
+    #wschen
+    #_, self.device = GetTypeAndDevice("/" + partition, OPTIONS.info_dict)
+    self.device = partition
 
   def WriteScript(self, script, output_zip, progress=None):
     if not self.src:
@@ -1108,6 +1262,7 @@ DataImage = blockimgdiff.DataImage
 # map recovery.fstab's fs_types to mount/format "partition types"
 PARTITION_TYPES = { "yaffs2": "MTD", "mtd": "MTD",
                     "ext4": "EMMC", "emmc": "EMMC",
+                    "ubifs": "MTD",
                     "f2fs": "EMMC" }
 
 def GetTypeAndDevice(mount_point, info):
@@ -1132,7 +1287,7 @@ def ParseCertificate(data):
   cert = "".join(cert).decode('base64')
   return cert
 
-def MakeRecoveryPatch(input_dir, output_sink, recovery_img, boot_img,
+def MakeRecoveryPatch(input_dir, output_sink, recovery_img, boot_img, tee_support,
                       info_dict=None):
   """Generate a binary patch that creates the recovery image starting
   with the boot image.  (Most of the space in these images is just the
@@ -1145,6 +1300,9 @@ def MakeRecoveryPatch(input_dir, output_sink, recovery_img, boot_img,
   corresponding images.  info should be the dictionary returned by
   common.LoadInfoDict() on the input target_files.
   """
+
+  if tee_support is not None:
+     OPTIONS.trustonic = tee_support
 
   if info_dict is None:
     info_dict = OPTIONS.info_dict
@@ -1171,10 +1329,126 @@ def MakeRecoveryPatch(input_dir, output_sink, recovery_img, boot_img,
     return
   recovery_type, recovery_device = td_pair
 
-  sh = """#!/system/bin/sh
+  if OPTIONS.tee is not None:
+    tee_img = open(OPTIONS.tee).read()
+    #common.ZipWriteStr(output_zip, "recovery/tee.img", tee_img)
+    #Item.Get("system/tee.img", dir=False)
+    tee2_img = File.FromLocalFile("tee.img",OPTIONS.tee)
+
+  if OPTIONS.trustonic is not None:
+    trustonic_img = open(OPTIONS.trustonic).read()
+    #common.ZipWriteStr(output_zip, "recovery/mobicore.bin", trustonic_img)
+    trustonic_bak_img = File.FromLocalFile("trustzone.bin",OPTIONS.trustonic)
+
+  if OPTIONS.mtk_sec_boot_sig_tail:
+    apply_sig_recovery = """
+  if applysig /system/etc/recovery.sig recovery; then
+    sync
+    log -t recovery "Apply recovery image signature completed"
+  else
+    log -t recovery "Apply recovery image signature fail!!"
+  fi
+
+    """
+  else:
+    apply_sig_recovery = ""
+
+  if OPTIONS.tee is not None:
+    sh = """#!/system/bin/sh
+  echo 1 > /sys/module/sec/parameters/recovery_done		#tony
 if ! applypatch -c %(recovery_type)s:%(recovery_device)s:%(recovery_size)d:%(recovery_sha1)s; then
+  log -t recovery "Installing new recovery image"
   applypatch %(bonus_args)s %(boot_type)s:%(boot_device)s:%(boot_size)d:%(boot_sha1)s %(recovery_type)s:%(recovery_device)s %(recovery_sha1)s %(recovery_size)d %(boot_sha1)s:/system/recovery-from-boot.p && log -t recovery "Installing new recovery image: succeeded" || log -t recovery "Installing new recovery image: failed"
+  if applypatch -c %(recovery_type)s:%(recovery_device)s:%(recovery_size)d:%(recovery_sha1)s; then		#tony
+	echo 0 > /sys/module/sec/parameters/recovery_done		#tony
+        log -t recovery "Install new recovery image completed"
+        %(sign_recovery_apply)s
+  else
+	echo 2 > /sys/module/sec/parameters/recovery_done		#tony
+        log -t recovery "Install new recovery image not completed"
+  fi
 else
+  echo 0 > /sys/module/sec/parameters/recovery_done              #tony
+  log -t recovery "Recovery image already installed"
+fi
+if ! applypatch -c %(tee_type)s:%(tee_device)s:%(tee_size)d:%(tee_sha1)s; then
+  log -t recovery "Installing new TEE image"
+  applypatch -t %(tee_image_path)s %(tee_type)s:%(tee_device)s:%(tee_size)d:%(tee_sha1)s 
+else
+  log -t recovery "TEE image already installed"
+fi
+""" % { 'boot_size': boot_img.size,
+        'boot_sha1': boot_img.sha1,
+        'recovery_size': recovery_img.size,
+        'recovery_sha1': recovery_img.sha1,
+        'tee_size': tee2_img.size,
+        'tee_sha1': tee2_img.sha1,
+        'boot_type': boot_type,
+        'boot_device': boot_device,
+        'recovery_type': recovery_type,
+        'recovery_device': recovery_device,
+        'tee_type': recovery_type,
+        'tee_device': "tee2",
+        'tee_image_path': "/system/tee.img",
+        'bonus_args': bonus_args,
+        'sign_recovery_apply':apply_sig_recovery
+        }
+  elif OPTIONS.trustonic is not None:
+    sh = """#!/system/bin/sh
+  echo 1 > /sys/module/sec/parameters/recovery_done		#koshi   
+if ! applypatch -c %(recovery_type)s:%(recovery_device)s:%(recovery_size)d:%(recovery_sha1)s; then
+  log -t recovery "Installing new recovery image"
+  applypatch %(bonus_args)s %(boot_type)s:%(boot_device)s:%(boot_size)d:%(boot_sha1)s %(recovery_type)s:%(recovery_device)s %(recovery_sha1)s %(recovery_size)d %(boot_sha1)s:/system/recovery-from-boot.p && log -t recovery "Installing new recovery image: succeeded" || log -t recovery "Installing new recovery image: failed"
+  if applypatch -c %(recovery_type)s:%(recovery_device)s:%(recovery_size)d:%(recovery_sha1)s; then		#koshi
+	echo 0 > /sys/module/sec/parameters/recovery_done		#koshi
+        log -t recovery "Install new recovery image completed"
+        %(sign_recovery_apply)s
+  else
+	echo 2 > /sys/module/sec/parameters/recovery_done		#koshi
+        log -t recovery "Install new recovery image not completed"
+  fi
+else
+  echo 0 > /sys/module/sec/parameters/recovery_done         #koshi
+  log -t recovery "Recovery image already installed"
+fi
+if ! applypatch -c %(tbase_type)s:%(tbase_device)s:%(tbase_size)d:%(tbase_sha1)s; then
+  log -t recovery "Installing new t-base image"
+  applypatch -t %(tbase_image_path)s %(tbase_type)s:%(tbase_device)s:%(tbase_size)d:%(tbase_sha1)s 
+else
+  log -t recovery "t-base image already installed"
+fi
+""" % { 'boot_size': boot_img.size,
+        'boot_sha1': boot_img.sha1,
+        'recovery_size': recovery_img.size,
+        'recovery_sha1': recovery_img.sha1,
+        'tbase_size': trustonic_bak_img.size,
+        'tbase_sha1': trustonic_bak_img.sha1,
+        'boot_type': boot_type,
+        'boot_device': boot_device,
+        'recovery_type': recovery_type,
+        'recovery_device': recovery_device,
+        'tbase_type': recovery_type,
+        'tbase_device': "tee2",
+		'tbase_image_path': "/system/etc/trustzone.bin",
+        'bonus_args': bonus_args,
+        'sign_recovery_apply':apply_sig_recovery
+        }
+  else:
+    sh = """#!/system/bin/sh
+  echo 1 > /sys/module/sec/parameters/recovery_done		#tony
+if ! applypatch -c %(recovery_type)s:%(recovery_device)s:%(recovery_size)d:%(recovery_sha1)s; then
+  log -t recovery "Installing new recovery image"
+  applypatch %(bonus_args)s %(boot_type)s:%(boot_device)s:%(boot_size)d:%(boot_sha1)s %(recovery_type)s:%(recovery_device)s %(recovery_sha1)s %(recovery_size)d %(boot_sha1)s:/system/recovery-from-boot.p && log -t recovery "Installing new recovery image: succeeded" || log -t recovery "Installing new recovery image: failed"
+  if applypatch -c %(recovery_type)s:%(recovery_device)s:%(recovery_size)d:%(recovery_sha1)s; then		#tony
+	echo 0 > /sys/module/sec/parameters/recovery_done		#tony
+        log -t recovery "Install new recovery image completed"
+        %(sign_recovery_apply)s
+  else
+	echo 2 > /sys/module/sec/parameters/recovery_done		#tony
+        log -t recovery "Install new recovery image not completed"
+  fi
+else
+  echo 0 > /sys/module/sec/parameters/recovery_done              #tony
   log -t recovery "Recovery image already installed"
 fi
 """ % { 'boot_size': boot_img.size,
@@ -1186,12 +1460,14 @@ fi
         'recovery_type': recovery_type,
         'recovery_device': recovery_device,
         'bonus_args': bonus_args,
+        'sign_recovery_apply':apply_sig_recovery
         }
+
 
   # The install script location moved from /system/etc to /system/bin
   # in the L release.  Parse the init.rc file to find out where the
   # target-files expects it to be, and put it there.
-  sh_location = "etc/install-recovery.sh"
+  sh_location = "bin/install-recovery.sh"
   try:
     with open(os.path.join(input_dir, "BOOT", "RAMDISK", "init.rc")) as f:
       for line in f:

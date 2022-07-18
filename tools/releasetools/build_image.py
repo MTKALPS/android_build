@@ -27,6 +27,7 @@ import sys
 import commands
 import shutil
 import tempfile
+import shutil
 
 FIXED_SALT = "aee087a5be3b982978c923f566a94613496b417f2af592639bc80d141e34dfe7"
 
@@ -255,6 +256,33 @@ def BuildImage(in_dir, prop_dict, out_file,
   elif fs_type.startswith("f2fs"):
     build_command = ["mkf2fsuserimg.sh"]
     build_command.extend([out_file, prop_dict["partition_size"]])
+  elif fs_type.startswith("ubifs"):
+    image_filename = os.path.basename(out_file)
+    image_dir = os.path.dirname(out_file)
+    if image_filename.startswith("system"):
+      prop_dict["tmp_out"] = image_dir + "/ubifs.android.img"
+    elif image_filename.startswith("userdata"):
+        prop_dict["tmp_out"] = image_dir + "/ubifs.usrdata.img"
+    if (prop_dict["ini"].startswith(image_dir) == False):
+        prop_dict["tmp_out"] = prop_dict["tmp_out"] + "." + str(os.getpid())
+	prop_dict["ubi_ini"] = image_dir + "/" + os.path.basename(prop_dict["ini"] + "." + str(os.getpid()))
+	with open(prop_dict["ubi_ini"], "wt") as fout:
+    	    with open(prop_dict["ini"], "rt") as fin:
+                for line in fin:
+		    fout.write(line.replace('.img', '.img.' + str(os.getpid())))
+    else:
+	prop_dict["ubi_ini"] = image_dir + "/" + os.path.basename(prop_dict["ini"])
+    print "tmp_out:" + prop_dict["tmp_out"] + ", ini:" + prop_dict["ubi_ini"]
+
+    build_command = ["mkfs_ubifs"]
+    if "ubifs_fixup_flag" in prop_dict:
+      build_command.extend(prop_dict["ubifs_fixup_flag"])
+    build_command.extend(["-F", "-S", prop_dict["selinux_fc"]])
+    build_command.extend(["-r", in_dir])
+    build_command.extend(["-o", prop_dict["tmp_out"]])
+    build_command.extend(["-m", prop_dict["pagesize"]])
+    build_command.extend(["-e", prop_dict["lebsize"]])
+    build_command.extend(["-c", prop_dict["leb_cnt"], "-v"])
   else:
     build_command = ["mkyaffs2image", "-f"]
     if prop_dict.get("mkyaffs2_extra_flags", None):
@@ -268,6 +296,21 @@ def BuildImage(in_dir, prop_dict, out_file,
   exit_code = RunCommand(build_command)
   if exit_code != 0:
     return False
+
+  if fs_type.startswith("ubifs"):
+    ubinize_command = ["ubinize"]
+    ubinize_command.extend(["-o", out_file])
+    ubinize_command.extend(["-m", prop_dict["pagesize"]])
+    ubinize_command.extend(["-p", prop_dict["blocksize"]])
+    ubinize_command.extend(["-O", prop_dict["vid_offset"]])
+    ubinize_command.extend(["-v", prop_dict["ubi_ini"]])
+    exit_code = RunCommand(ubinize_command)
+    if exit_code != 0:
+      return False
+    if (prop_dict["ini"].startswith(image_dir) == False and os.path.exists(prop_dict["ubi_ini"]) == True):
+      os.remove(prop_dict["ubi_ini"])
+    if os.path.exists(prop_dict["tmp_out"]):
+      os.remove(prop_dict["tmp_out"])
 
   # create the verified image if this is to be verified
   if verity_supported and is_verity_partition:
@@ -287,6 +330,25 @@ def BuildImage(in_dir, prop_dict, out_file,
 
   return exit_code == 0
 
+def ParseNum(size_num):
+  """Parse a human-friendly size string to size in bytes.
+
+  Args:
+    size_num: size string.
+  """
+  try:
+    if size_num.endswith('k') or size_num.endswith('K'):
+      num = int(size_num[:-1]) * 1024
+    elif size_num.endswith('m') or size_num.endswith('M'):
+      num = int(size_num[:-1]) * 1024 * 1024
+    elif size_num.endswith('g') or size_num.endswith('G'):
+      num = int(size_num[:-1]) * 1024 * 1024 * 1024
+    else:
+      num = int(size_num)
+  except ValueError:
+    num = -1
+
+  return num
 
 def ImagePropFromGlobalDict(glob_dict, mount_point):
   """Build an image property dictionary from the global dictionary.
@@ -328,6 +390,11 @@ def ImagePropFromGlobalDict(glob_dict, mount_point):
     copy_prop("fs_type", "fs_type")
     copy_prop("userdata_fs_type", "fs_type")
     copy_prop("userdata_size", "partition_size")
+    # Workaround: CTS vm-tests-tf runs out of inode on a small /data partition
+    # TODO: Pass the min. inodes value from a Makefile option
+    if "partition_size" in d and ParseNum(d["partition_size"]) < (16384 * 4 * 4096):
+      # default inodes < 16384 (partition size < 256M)
+      d["extfs_inodes"] = str(16384)
   elif mount_point == "cache":
     copy_prop("cache_fs_type", "fs_type")
     copy_prop("cache_size", "partition_size")
@@ -340,6 +407,24 @@ def ImagePropFromGlobalDict(glob_dict, mount_point):
     copy_prop("fs_type", "fs_type")
     copy_prop("oem_size", "partition_size")
     copy_prop("oem_journal_size", "journal_size")
+  elif mount_point == "custom":
+    copy_prop("fs_type", "fs_type")
+    copy_prop("custom_size", "partition_size")
+    copy_prop("custom_verity_block_device", "verity_block_device")
+
+  if "fs_type" in d:
+    if d["fs_type"] == "ubifs":
+      copy_prop("pagesize", "pagesize")
+      copy_prop("vid_offset", "vid_offset")
+      copy_prop("lebsize", "lebsize");
+      copy_prop("blocksize", "blocksize");
+      if mount_point == "system":
+        copy_prop("system_cnt", "leb_cnt");
+        copy_prop("system_ini", "ini");
+      elif mount_point == "data":
+        copy_prop("userdata_cnt", "leb_cnt");
+        copy_prop("userdata_ini", "ini");
+      copy_prop("ubifs_fixup_flag", "ubifs_fixup_flag");
 
   return d
 
@@ -372,6 +457,8 @@ def main(argv):
   mount_point = ""
   if image_filename == "system.img":
     mount_point = "system"
+  elif image_filename == "system.img.fixup":
+    mount_point = "system"
   elif image_filename == "userdata.img":
     mount_point = "data"
   elif image_filename == "cache.img":
@@ -380,6 +467,8 @@ def main(argv):
     mount_point = "vendor"
   elif image_filename == "oem.img":
     mount_point = "oem"
+  elif image_filename == "custom.img":
+    mount_point = "custom"
   else:
     print >> sys.stderr, "error: unknown image file name ", image_filename
     exit(1)

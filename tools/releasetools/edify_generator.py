@@ -172,7 +172,13 @@ class EdifyGenerator(object):
       E.g. ext4=barrier=1,nodelalloc,errors=panic|f2fs=errors=recover
     """
     fstab = self.info.get("fstab", None)
-    if fstab:
+
+    #wschen 2012-11-12 
+    if mount_point == "/custom":
+      self.script.append('mount("ext4", "EMMC", "/dev/block/mmcblk", "/custom");')
+      self.mounts.add(mount_point)
+
+    elif fstab:
       p = fstab[mount_point]
       mount_dict = {}
       if mount_options_by_format is not None:
@@ -218,14 +224,19 @@ class EdifyGenerator(object):
 
     reserve_size = 0
     fstab = self.info.get("fstab", None)
-    if fstab:
+
+    #wschen 2012-11-12 
+    if partition == "/custom":
+      self.script.append('format("ext4", "EMMC", "/dev/block/mmcblk", "0", "/custom");')
+
+    elif fstab:
       p = fstab[partition]
       self.script.append('format("%s", "%s", "%s", "%s", "%s");' %
                          (p.fs_type, common.PARTITION_TYPES[p.fs_type],
                           p.device, p.length, p.mount_point))
 
   def WipeBlockDevice(self, partition):
-    if partition not in ("/system", "/vendor"):
+    if partition not in ("/system", "/vendor", "custom"):
       raise ValueError(("WipeBlockDevice doesn't work on %s\n") % (partition,))
     fstab = self.info.get("fstab", None)
     size = self.info.get(partition.lstrip("/") + "_size", None)
@@ -267,6 +278,25 @@ class EdifyGenerator(object):
     cmd = "".join(cmd)
     self.script.append(self._WordWrap(cmd))
 
+  def ApplySig(self, sigfile_name, partion_name):
+    """Apply signature for boot.img and recovery.img."""
+    self.script.append(('apply_sig(package_extract_file("%(sigfile_name)s"), "%(partion_name)s");')
+            % {'sigfile_name':sigfile_name, 'partion_name':partion_name})
+    
+  def WriteRawImage2(self, partition, fn):
+    """Write the given package file into the given MTD partition."""
+    self.script.append(
+        ('assert(package_extract_file("%(fn)s", "/tmp/%(partition)s.img"),\n'
+         '       write_raw_image("/tmp/%(partition)s.img", "%(partition)s"),\n'
+         '       delete("/tmp/%(partition)s.img"));')
+        % {'partition': partition, 'fn': fn})
+
+  def WriteRawImageUbifs(self, partition, fn):
+    """Write the given package file into the given MTD partition."""
+    self.script.append(
+        ('assert(package_extract_file("%(fn)s", "%(partition)s.img"));')
+        % {'partition': partition, 'fn': fn})
+
   def WriteRawImage(self, mount_point, fn, mapfn=None):
     """Write the given package file into the partition for the given
     mount point."""
@@ -276,7 +306,28 @@ class EdifyGenerator(object):
       p = fstab[mount_point]
       partition_type = common.PARTITION_TYPES[p.fs_type]
       args = {'device': p.device, 'fn': fn}
-      if partition_type == "MTD":
+      if fn == "boot.img" and p.device == "boot":
+        self.script.append(
+          ('assert(package_extract_file("%(fn)s", "/tmp/%(fn)s"),\n'
+           '       write_raw_image("/tmp/%(fn)s", "bootimg"),\n'
+           '       delete("/tmp/%(fn)s"));') % args)
+      elif fn == "recovery.img" and p.device == "boot":
+        if self.info.get("mtk_header_support", False):
+          self.script.append(
+            'assert(package_extract_file("recovery_bthdr.img", "/tmp/recovery_bthdr.img"),\n'
+            '       write_raw_image("/tmp/recovery_bthdr.img", "bootimg"),\n'
+            '       delete("/tmp/recovery_bthdr.img"));')
+        else:
+          self.script.append(
+            ('assert(package_extract_file("%(fn)s", "/tmp/%(fn)s"),\n'
+             '       write_raw_image("/tmp/%(fn)s", "bootimg"),\n'
+             '       delete("/tmp/%(fn)s"));') % args)
+      elif fn == "recovery.img" and p.device == "recovery":
+        self.script.append(
+          ('assert(package_extract_file("%(fn)s", "/tmp/%(fn)s"),\n'
+           '       write_raw_image("/tmp/%(fn)s", "recovery"),\n'
+           '       delete("/tmp/%(fn)s"));') % args)
+      elif partition_type == "MTD":
         self.script.append(
             'write_raw_image(package_extract_file("%(fn)s"), "%(device)s");'
             % args)

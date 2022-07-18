@@ -17,9 +17,18 @@
 # This is the list of product-level settings that are specific
 # to products that have telephony hardware.
 
-PRODUCT_PACKAGES := \
+ifndef MTK_TB_WIFI_3G_MODE
+    PRODUCT_PACKAGES := \
+        Mms
+else
+    ifeq ($(strip $(MTK_TB_WIFI_3G_MODE)), 3GDATA_SMS)
+        PRODUCT_PACKAGES := \
+            Mms
+    endif
+endif
+
+PRODUCT_PACKAGES += \
     Dialer \
-    Mms \
     rild
 
 PRODUCT_COPY_FILES := \

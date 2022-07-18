@@ -28,7 +28,7 @@ prebuilt_static_java_libraries := $(LOCAL_PREBUILT_STATIC_JAVA_LIBRARIES)
 prebuilt_is_host := $(LOCAL_IS_HOST_MODULE)
 prebuilt_module_tags := $(LOCAL_MODULE_TAGS)
 prebuilt_strip_module := $(LOCAL_STRIP_MODULE)
-
+prebuilt_multilib := $(LOCAL_MULTILIB)
 
 ifndef multi_prebuilt_once
 multi_prebuilt_once := true
@@ -41,6 +41,7 @@ multi_prebuilt_once := true
 # $(6): UNINSTALLABLE_MODULE
 # $(7): BUILT_MODULE_STEM
 # $(8): LOCAL_STRIP_MODULE
+# $(9): LOCAL_MULTILIB
 #
 # Elements in the file list may be bare filenames,
 # or of the form "<modulename>:<filename>".
@@ -78,6 +79,7 @@ $(foreach t,$(1), \
   $(eval LOCAL_MODULE_SUFFIX := $(suffix $(LOCAL_SRC_FILES))) \
   $(if $(filter user,$(TARGET_BUILD_VARIANT)), \
     $(eval LOCAL_STRIP_MODULE := $(8))) \
+  $(eval LOCAL_MULTILIB := $(9)) \
   $(eval include $(BUILD_PREBUILT)) \
  )
 endef
@@ -91,7 +93,10 @@ $(call auto-prebuilt-boilerplate, \
     STATIC_LIBRARIES, \
     $(prebuilt_module_tags), \
     , \
-    true)
+    true, \
+    , \
+    , \
+    $(prebuilt_multilib))
 
 $(call auto-prebuilt-boilerplate, \
     $(prebuilt_shared_libs), \
@@ -101,7 +106,8 @@ $(call auto-prebuilt-boilerplate, \
     $($(if $(prebuilt_is_host),HOST,TARGET)_OUT_INTERMEDIATE_LIBRARIES), \
     , \
     , \
-    $(prebuilt_strip_module))
+    $(prebuilt_strip_module), \
+    $(prebuilt_multilib))
 
 $(call auto-prebuilt-boilerplate, \
     $(prebuilt_executables), \

@@ -73,6 +73,11 @@ $(full_classes_compiled_jar): PRIVATE_JAVAC_DEBUG_FLAGS := -g
 # Run build/tools/java-layers.py for more details.
 layers_file := $(addprefix $(LOCAL_PATH)/, $(LOCAL_JAVA_LAYERS_FILE))
 
+$(full_classes_compiled_jar): PRIVATE_PROGUARD_SOURCE := $(LOCAL_PROGUARD_SOURCE)
+$(full_classes_compiled_jar): PRIVATE_EXCLUDED_JAVA_CLASSES := $(LOCAL_EXCLUDED_JAVA_CLASSES)
+$(full_classes_compiled_jar): PRIVATE_CLASS_PROGUARD_FLAGS := 
+$(full_classes_compiled_jar): PRIVATE_JAVASSIST_ENABLED := $(LOCAL_JAVASSIST_ENABLED)
+$(full_classes_compiled_jar): PRIVATE_JAVASSIST_OPTIONS := $(LOCAL_JAVASSIST_OPTIONS)
 $(full_classes_compiled_jar): PRIVATE_JAVA_LAYERS_FILE := $(layers_file)
 $(full_classes_compiled_jar): PRIVATE_JAVACFLAGS := $(LOCAL_JAVACFLAGS)
 $(full_classes_compiled_jar): PRIVATE_JAR_EXCLUDE_FILES :=

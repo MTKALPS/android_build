@@ -304,7 +304,7 @@ include build/core/pdk_config.mk
 
 is_sdk_build :=
 
-ifneq ($(filter sdk win_sdk sdk_addon,$(MAKECMDGOALS)),)
+ifneq ($(filter sdk win_sdk banyan_sdk_addon sdk_addon,$(MAKECMDGOALS)),)
 is_sdk_build := true
 endif
 
@@ -906,7 +906,9 @@ droidcore: files \
 
 # dist_files only for putting your library into the dist directory with a full build.
 .PHONY: dist_files
-
+ifeq ($(strip $(MTK_CIP_SUPPORT)), yes)
+droidcore: $(INSTALLED_CUSTOMIMAGE_TARGET)
+endif
 ifneq ($(TARGET_BUILD_APPS),)
   # If this build is just for apps, only build apps and not the full system by default.
 

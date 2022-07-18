@@ -19,12 +19,13 @@
 # build of the emulator, but all those aspects can be overridden
 # in inherited configurations.
 
+#Remove libfwdlockengine from image, we do use libdrmmtkplugin.so instead it
+#Modify by Rui.hu
 PRODUCT_PACKAGES := \
-    libfwdlockengine \
-    OpenWnn \
-    libWnnEngDic \
-    libWnnJpnDic \
-    libwnndict \
+#    OpenWnn \
+#    libWnnEngDic \
+#    libWnnJpnDic \
+#    libwnndict \
     WAPPushManager
 
 PRODUCT_PACKAGES += \

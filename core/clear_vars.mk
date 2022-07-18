@@ -249,6 +249,17 @@ LOCAL_MODULE_STEM_64:=
 LOCAL_CLANG_32:=
 LOCAL_CLANG_64:=
 
+LOCAL_GENERATE_CUSTOM_FOLDER := 
+LOCAL_NO_MTKRES := 
+LOCAL_GENERATED_RESOURCES :=
+LOCAL_ALE_ENABLED:=
+LOCAL_PROGUARD_SOURCE :=
+LOCAL_EXCLUDED_JAVA_CLASSES:=
+LOCAL_JAVASSIST_ENABLED:=
+LOCAL_JAVASSIST_OPTIONS:=
+LOCAL_ASPECTS_DIR :=
+LOCAL_TRUSTZONE_BIN :=
+
 # Trim MAKEFILE_LIST so that $(call my-dir) doesn't need to
 # iterate over thousands of entries every time.
 # Leave the current makefile to make sure we don't break anything

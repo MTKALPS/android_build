@@ -73,6 +73,9 @@ ifneq ($(LOCAL_SDK_VERSION),)
   endif
 else
   LOCAL_JAVA_LIBRARIES := core-libart ext framework $(LOCAL_JAVA_LIBRARIES)
+ifneq ($(TARGET_BUILD_PDK),true)
+  LOCAL_JAVA_LIBRARIES := mediatek-common $(LOCAL_JAVA_LIBRARIES)
+endif #PDK
   $(full_target): PRIVATE_BOOTCLASSPATH := $(call java-lib-files, core-libart)
 endif  # LOCAL_SDK_VERSION
 LOCAL_JAVA_LIBRARIES := $(sort $(LOCAL_JAVA_LIBRARIES))

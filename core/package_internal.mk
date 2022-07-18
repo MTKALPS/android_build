@@ -162,6 +162,7 @@ endif # need_compile_res
 endif # !custom
 LOCAL_PROGUARD_FLAGS := $(addprefix -include ,$(proguard_options_file)) $(LOCAL_PROGUARD_FLAGS)
 
+
 ifeq (true,$(EMMA_INSTRUMENT))
 ifndef LOCAL_EMMA_INSTRUMENT
 # No emma for test apks.
@@ -256,6 +257,7 @@ ifdef LOCAL_EXPORT_PACKAGE_RESOURCES
 # files.
 resource_export_package := $(intermediates.COMMON)/package-export.apk
 $(R_file_stamp): $(resource_export_package)
+$(call intermediates-dir-for,APPS,mediatek-res,,COMMON)/package-export.apk:$(call intermediates-dir-for,APPS,framework-res,,COMMON)/src/R.stamp
 
 # add-assets-to-package looks at PRODUCT_AAPT_CONFIG, but this target
 # can't know anything about PRODUCT.  Clear it out just for this target.
@@ -297,11 +299,17 @@ framework_res_package_export_deps := $(framework_res_package_export)
 else # LOCAL_SDK_RES_VERSION
 framework_res_package_export := \
     $(call intermediates-dir-for,APPS,framework-res,,COMMON)/package-export.apk
+
+  ifneq ($(LOCAL_NO_MTKRES), true)
+    framework_res_package_export += \
+      $(call intermediates-dir-for,APPS,mediatek-res,,COMMON)/package-export.apk
+  endif
+
 # We can't depend directly on the export.apk file; it won't get its
 # PRIVATE_ vars set up correctly if we do.  Instead, depend on the
 # corresponding R.stamp file, which lists the export.apk as a dependency.
 framework_res_package_export_deps := \
-    $(dir $(framework_res_package_export))src/R.stamp
+    $(foreach pkg, $(framework_res_package_export), $(dir $(pkg))src/R.stamp)
 endif # LOCAL_SDK_RES_VERSION
 all_library_res_package_exports := \
     $(framework_res_package_export) \

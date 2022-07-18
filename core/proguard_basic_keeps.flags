@@ -62,3 +62,12 @@
 
 # Less spammy.
 -dontnote
+# MTK add
+-keep class com.mediatek.**.ext.** {
+  *;
+}
+
+-keepclassmembers class * {
+    native <methods>;
+}
+# MTK end

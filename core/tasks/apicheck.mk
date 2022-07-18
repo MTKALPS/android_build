@@ -130,3 +130,4 @@ update-system-api: $(INTERNAL_PLATFORM_SYSTEM_API_FILE) | $(ACP)
 	$(hide) $(ACP) $(INTERNAL_PLATFORM_SYSTEM_REMOVED_API_FILE) frameworks/base/api/system-removed.txt
 
 endif
+

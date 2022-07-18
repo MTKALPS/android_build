@@ -28,10 +28,13 @@ OPTIONS = common.OPTIONS
 def main(argv):
   # def option_handler(o, a):
   #   return False
-
+  tee_support = None
   args = common.ParseOptions(argv, __doc__)
-  input_dir, output_dir = args
+  input_dir, output_dir, tee_support = args
+  if tee_support in ['No', 'no', ' ']:
+   tee_support = None
 
+  print "tee_support = ",tee_support
   OPTIONS.info_dict = common.LoadInfoDict(input_dir)
 
   recovery_img = common.GetBootableImage("recovery.img", "recovery.img",
@@ -46,7 +49,11 @@ def main(argv):
     with open(os.path.join(output_dir, "SYSTEM", *fn.split("/")), "wb") as f:
       f.write(data)
 
-  common.MakeRecoveryPatch(input_dir, output_sink, recovery_img, boot_img)
+  if tee_support is not None:
+   tee_support = os.path.join(tee_support,"trustzone.bin")
+
+  print "tee_support = ",tee_support
+  common.MakeRecoveryPatch(input_dir, output_sink, recovery_img, boot_img, tee_support)
 
 
 if __name__ == '__main__':

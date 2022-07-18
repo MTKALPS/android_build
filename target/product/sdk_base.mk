@@ -29,13 +29,9 @@ PRODUCT_PACKAGES := \
 	GestureBuilder \
 	LegacyCamera \
 	librs_jni \
-	libwnndict \
-	libWnnEngDic \
-	libWnnJpnDic \
 	LiveWallpapersPicker \
 	Mms \
 	Music \
-	OpenWnn \
 	Protips \
 	rild \
 	SdkSetup \
@@ -45,7 +41,10 @@ PRODUCT_PACKAGES := \
 	sqlite3 \
 	SystemUI \
 	WidgetPreview
-
+#	libwnndict \
+#	libWnnEngDic \
+#	libWnnJpnDic \
+#	OpenWnn \
 # Define the host tools and libs that are parts of the SDK.
 -include sdk/build/product_sdk.mk
 -include development/build/product_sdk.mk

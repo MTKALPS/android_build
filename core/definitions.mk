@@ -210,6 +210,18 @@ $(patsubst ./%,%, \
 endef
 
 ###########################################################
+## Find all of the c and cpp files under the named directories.
+## Meant to be used like:
+##    SRC_FILES := $(call all-c-cpp-files-under,src tests)
+###########################################################
+define all-c-cpp-files-under
+$(patsubst ./%,%, \
+  $(shell cd $(LOCAL_PATH) ; \
+          find -L $(1) -maxdepth 1 \( -name "*.c" -or -name "*.cpp" \) -and -not -name ".*") \
+ )
+endef
+
+###########################################################
 ## Find all of the c files from here.  Meant to be used like:
 ##    SRC_FILES := $(call all-subdir-c-files)
 ###########################################################
@@ -1554,6 +1566,25 @@ define unzip-jar-files
   $(if $(PRIVATE_DONT_DELETE_JAR_META_INF),,;rm -rf $(2)/META-INF)
 endef
 
+define transform-classes-to-classes.proguard
+@echo "Transform classes using ProGuard"
+@mkdir -p $(dir $(proguard_dictionary))
+$(hide) $(PROGUARD) -injars $(PRIVATE_CLASS_INTERMEDIATES_DIR) -outjars $(PRIVATE_CLASS_INTERMEDIATES_DIR).proguard $(PRIVATE_CLASS_PROGUARD_FLAGS)
+$(hide) rm -rf $(PRIVATE_CLASS_INTERMEDIATES_DIR)
+$(hide) mv $(PRIVATE_CLASS_INTERMEDIATES_DIR).proguard $(PRIVATE_CLASS_INTERMEDIATES_DIR)
+endef
+
+define transform-partial-classes-to-classes.proguard
+@echo "Transform partial classes using ProGuard"
+@mkdir -p $(dir $(proguard_dictionary))
+$(hide) $(PROGUARD) -injars $(PRIVATE_CLASS_INTERMEDIATES_DIR)/../proguard.temp \
+                    -outjars $(PRIVATE_CLASS_INTERMEDIATES_DIR).partial.proguard \
+                    -libraryjars $(PRIVATE_CLASS_INTERMEDIATES_DIR) $(PRIVATE_CLASS_PROGUARD_FLAGS)
+$(hide) cp -R $(PRIVATE_CLASS_INTERMEDIATES_DIR).partial.proguard/* $(PRIVATE_CLASS_INTERMEDIATES_DIR)
+$(hide) rm -rf $(PRIVATE_CLASS_INTERMEDIATES_DIR).partial.proguard
+$(hide) rm -rf $(PRIVATE_CLASS_INTERMEDIATES_DIR)/../proguard.temp
+endef
+
 # Common definition to invoke javac on the host and target.
 #
 # Some historical notes:
@@ -1597,6 +1628,11 @@ $(if $(PRIVATE_JAR_EXCLUDE_FILES), $(hide) find $(PRIVATE_CLASS_INTERMEDIATES_DI
     -name $(word 1, $(PRIVATE_JAR_EXCLUDE_FILES)) \
     $(addprefix -o -name , $(wordlist 2, 999, $(PRIVATE_JAR_EXCLUDE_FILES))) \
     | xargs rm -rf)
+$(if $(PRIVATE_JAVASSIST_ENABLED), \
+   $(hide) java -jar $(HOST_OUT_JAVA_LIBRARIES)/jpe_tool.jar $(PRIVATE_JAVASSIST_OPTIONS) $(PRIVATE_CLASS_INTERMEDIATES_DIR) $(PRIVATE_ALL_JAVA_LIBRARIES), )
+$(if $(PRIVATE_EXCLUDED_JAVA_CLASSES), \
+   $(split_package), \
+   $(if $(PRIVATE_PROGUARD_SOURCE),$(transform-classes-to-classes.proguard),))
 $(if $(PRIVATE_JAR_PACKAGES), \
     $(hide) find $(PRIVATE_CLASS_INTERMEDIATES_DIR) -mindepth 1 -type f \
         $(foreach pkg, $(PRIVATE_JAR_PACKAGES), \
@@ -1614,9 +1650,59 @@ $(if $(PRIVATE_JAR_MANIFEST), \
     $(hide) jar -cf $@ -C $(PRIVATE_CLASS_INTERMEDIATES_DIR) .)
 endef
 
+define split_package
+ @echo "start splitting package..."
+ $(hide) mkdir -p $(PRIVATE_CLASS_INTERMEDIATES_DIR)/../proguard.temp
+ @cd $(PRIVATE_CLASS_INTERMEDIATES_DIR); \
+ $(foreach item,$(PRIVATE_EXCLUDED_JAVA_CLASSES),\
+     mkdir -p ../proguard.temp/$(dir $(item)); mv $(item) ../proguard.temp/$(dir $(item));)
+     $(transform-partial-classes-to-classes.proguard)
+endef
+
+# Common definition to invoke ajc to weave the target.
+#
+# $(1): java
+# $(2): ajc main class
+# $(3): classpath
+# $(4): aspect source path
+define weave-classes
+ @echo "AspectJ Weaving classes... "
+ @echo "Dest:" $@ "Src:" $<
+ @echo "PRIVATE_PATH:[[" $(PRIVATE_PATH)]]
+ @echo "PRIVATE_ALL_JAVA_LIBRARIES:[[" $(PRIVATE_ALL_JAVA_LIBRARIES)]]
+ @echo "PRIVATE_JAVA_LIBRARIES:[[" $(PRIVATE_JAVA_LIBRARIES)]]
+ @echo "PRIVATE_STATIC_JAVA_LIBRARIES:[[" $(PRIVATE_STATIC_JAVA_LIBRARIES)]]
+ @echo "PRIVATE_CLASS_INTERMEDIATES_DIR:[[" $(PRIVATE_CLASS_INTERMEDIATES_DIR)]]
+
+ $(1) $(addprefix -classpath ,$(3)) \
+ $(2) \
+ -inpath $< \
+ -1.5 -Xlint:ignore \
+ -sourceroots $(4) \
+ -outjar $@
+
+endef
+
+
 define transform-java-to-classes.jar
 @echo "target Java: $(PRIVATE_MODULE) ($(PRIVATE_CLASS_INTERMEDIATES_DIR))"
 $(call compile-java,$(TARGET_JAVAC),$(PRIVATE_BOOTCLASSPATH))
+endef
+
+define aop-classpath
+$(strip $(call normalize-path-list,\
+               $(PRIVATE_ALL_JAVA_LIBRARIES) \
+               $(PRIVATE_CLASS_INTERMEDIATES_DIR) \
+               prebuilts/sdk/current/android.jar \
+               prebuilts/tools/common/aspectj/aspectjtools.jar \
+               prebuilts/tools/common/aspectj/aspectjrt.jar\
+))
+endef
+
+define aop-weave-classes.jar
+@echo "AOP: [Call weave-classes] PRIVATE_PATH = $(PRIVATE_PATH), PRIVATE_ASPECTS_DIR = $(PRIVATE_ASPECTS_DIR)"
+@echo "AOP: [Call weave-classes] CLASSPATH = $(aop-classpath)"
+$(call weave-classes,$(TARGET_AJC),$(AJC_MAIN_CLASS),$(aop-classpath),$(PRIVATE_PATH)/$(PRIVATE_ASPECTS_DIR))
 endef
 
 # Override the above definitions if we want to do incremetal javac
@@ -1977,10 +2063,30 @@ endif
 ###########################################################
 ## Commands to call Proguard
 ###########################################################
+
+# Command to copy the file with acp, if proguard is disabled.
+define proguard-disabled-commands
+@echo Copying: $@
+$(hide) $(ACP) -fp $< $@
+endef
+
+# Command to call Proguard
+# $(1): extra flags for instrumentation.
+define proguard-enabled-commands
+@echo Proguard: $@
+$(hide) $(PROGUARD) -injars $< -outjars $@ $(PRIVATE_PROGUARD_FLAGS)
+endef
+
+# Figure out the proguard dictionary file of the module that is instrumentationed for.
+define get-instrumentation-proguard-flags
+$(if $(PRIVATE_INSTRUMENTATION_FOR),$(if $(ALL_MODULES.$(PRIVATE_INSTRUMENTATION_FOR).PROGUARD_ENABLED),-applymapping $(call intermediates-dir-for,APPS,$(PRIVATE_INSTRUMENTATION_FOR),,COMMON)/proguard_dictionary))
+endef
+
 define transform-jar-to-proguard
 @echo Proguard: $@
-$(hide) $(PROGUARD) -injars $< -outjars $@ $(PRIVATE_PROGUARD_FLAGS) \
-    $(addprefix -injars , $(PRIVATE_EXTRA_INPUT_JAR))
+$(eval _enable_proguard:=$(PRIVATE_PROGUARD_ENABLED))
+$(if $(_enable_proguard),$(call proguard-enabled-commands),$(call proguard-disabled-commands))
+$(eval _enable_proguard:=)
 endef
 
 ###########################################################

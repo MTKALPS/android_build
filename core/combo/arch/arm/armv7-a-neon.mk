@@ -15,7 +15,15 @@ else
 ifeq ($(strip $(TARGET_$(combo_2nd_arch_prefix)CPU_VARIANT)),cortex-a7)
 	arch_variant_cflags := -mcpu=cortex-a7
 else
+ifeq ($(strip $(TARGET_$(combo_2nd_arch_prefix)CPU_VARIANT)),cortex-a17.cortex-a7)
+	arch_variant_cflags := -mcpu=cortex-a12.cortex-a7
+else
+ifeq ($(strip $(TARGET_$(combo_2nd_arch_prefix)CPU_VARIANT)),cortex-a53)
+	arch_variant_cflags := -march=armv7ve -mtune=cortex-a53
+else
 	arch_variant_cflags := -march=armv7-a
+endif
+endif
 endif
 endif
 endif
@@ -25,4 +33,4 @@ arch_variant_cflags += \
     -mfpu=neon
 
 arch_variant_ldflags := \
-	-Wl,--fix-cortex-a8
+	-Wl,--no-fix-cortex-a8
